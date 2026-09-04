@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
-import type { Schedule } from "../../types/schedule"
+import type { Schedule, ScheduledSlot } from "../../types/schedule"
 import { scheduleTitle } from "../../types/schedule"
 import { ensureLoaded, removeSchedule, useScheduleStore } from "../../composables/useScheduleStore"
 import { colorizeTeams } from "../../utils/teamColor"
@@ -142,6 +142,26 @@ function ovMembers(s: Schedule, c: OvColumn) {
   const t = s.teams.find((x) => x.id === c.key) ?? s.teams.find((x) => x.name === c.name)
   return t ? t.members : []
 }
+
+/* ---------------- 总览：点击角色高亮其所属成员的全部角色 ---------------- */
+const ovHl = ref<{ g: string; key: string } | null>(null)
+
+/** 成员标识：优先 memberId，缺失时退回成员昵称（再退回角色昵称） */
+function ovMemberKey(mb: ScheduledSlot): string {
+  return mb.memberId || mb.memberName || mb.nickname
+}
+
+/** 该角色是否处于“高亮该成员”状态（组内作用域） */
+function ovIsHl(g: HistGroup, mb: ScheduledSlot): boolean {
+  return !!ovHl.value && ovHl.value.g === g.key && ovHl.value.key === ovMemberKey(mb)
+}
+
+/** 点击切换：高亮该成员在此次排班中的全部角色；再点取消 */
+function ovToggleHl(g: HistGroup, mb: ScheduledSlot) {
+  const key = ovMemberKey(mb)
+  ovHl.value =
+    ovHl.value && ovHl.value.g === g.key && ovHl.value.key === key ? null : { g: g.key, key }
+}
 </script>
 
 <template>
@@ -209,8 +229,12 @@ function ovMembers(s: Schedule, c: OvColumn) {
                       v-for="mb in ovMembers(s, c)"
                       :key="mb.characterId"
                       class="ov-chip"
-                      :class="mb.roleType === 'dps' ? 'is-dps' : 'is-sup'"
-                      :title="`${mb.memberName} · ${mb.job} · ${mb.roleType === 'dps' ? '伤害(千亿) ' : '奶量 '}${mb.score}`"
+                      :class="[
+                        mb.roleType === 'dps' ? 'is-dps' : 'is-sup',
+                        { 'is-hl': ovIsHl(g, mb) },
+                      ]"
+                      :title="`${mb.memberName} · ${mb.job} · ${mb.roleType === 'dps' ? '伤害(千亿) ' : '奶量 '}${mb.score}${ovIsHl(g, mb) ? '（点击取消高亮）' : '（点击高亮该成员全部角色）'}`"
+                      @click="ovToggleHl(g, mb)"
                     >
                       {{ mb.nickname }}
                     </span>
@@ -403,12 +427,20 @@ function ovMembers(s: Schedule, c: OvColumn) {
 }
 
 .ov-chip {
+  min-width: 120px;
   display: inline-flex;
   margin: 2px 0;
   padding: 2px 8px;
   border-radius: 8px;
   color: #fff;
   white-space: nowrap;
+  justify-content: center;
+  cursor: pointer;
+  transition: box-shadow 0.12s ease, filter 0.12s ease;
+
+  &:hover {
+    filter: brightness(1.12);
+  }
 
   &.is-dps {
     background-color: #1971c2;
@@ -416,6 +448,13 @@ function ovMembers(s: Schedule, c: OvColumn) {
 
   &.is-sup {
     background-color: #2f9e44;
+  }
+
+  /* 点击高亮：该成员的全部角色 */
+  &.is-hl {
+    outline: 2px solid #ff3b9d;
+    outline-offset: 1px;
+    box-shadow: 0 0 0 4px color-mix(in srgb, #ff3b9d 45%, transparent);
   }
 }
 
