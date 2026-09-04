@@ -60,7 +60,7 @@ export function emptyDraftsFromTemplate(
  * - **宁缺不开碎队**：第一队（红）允许不满员；从第二队起，若剩余池不足一整队
  *   （< TEAM_SIZE）则不再开新队，其余一律进替补——避免“黄/绿单挂 1 人碎队”；
  * - 取人时满足门槛者优先（取最高）；无人满足则就近补位（低于门槛但最高）；
- * - 队内细分职业**尽量不重复**（软偏好，必要时才允许同职业）；
+ * - **只按定位选人**：队内不区分细分职业(job)，仅按 输出/辅助 定位 + 门槛/分数 取人；
  * - 超过所有队伍容量的人进入替补（bench）。
  */
 export function assignByLimits(
@@ -83,47 +83,21 @@ export function assignByLimits(
   const roleCount = (items: DraftItem[], role: "dps" | "support") =>
     items.filter((x) => x.character.roleType === role).length
 
-  /** 取一名角色：满足门槛取最高分；否则就近补位；同分/同满足优先选“队内没出现过的职业” */
-  function take(
-    list: DraftItem[],
-    limit: number,
-    usedJobs: Set<string>
-  ): DraftItem | null {
+  /**
+   * 取一名角色：列表已按分数降序。只按定位 + 门槛取人（不区分细分职业）：
+   * 优先取满足门槛的第一个（即满足者中分数最高）；整池无人达标则就近补位取最高（列表头）。
+   */
+  function take(list: DraftItem[], limit: number): DraftItem | null {
     if (!list.length) return null
-    let meet = list.findIndex(
-      (it) => limit <= 0 || it.character.score >= limit
-    )
-    if (meet < 0) meet = list.length
-    let idx = -1
-    // 满足门槛且职业不重复者优先
-    for (let i = meet; i < list.length; i++) {
-      if (!usedJobs.has(list[i].character.job)) {
-        idx = i
-        break
-      }
-    }
-    // 满足门槛但职业都有重复 → 取满足者最高
-    if (idx < 0 && meet < list.length) idx = meet
-    // 无人满足：就近补位，尽量职业不重复
-    if (idx < 0) {
-      for (let i = 0; i < meet; i++) {
-        if (!usedJobs.has(list[i].character.job)) {
-          idx = i
-          break
-        }
-      }
-      if (idx < 0) idx = 0
-    }
-    const it = list.splice(idx, 1)[0]
-    usedJobs.add(it.character.job)
-    return it
+    let idx = list.findIndex((it) => limit <= 0 || it.character.score >= limit)
+    if (idx < 0) idx = 0
+    return list.splice(idx, 1)[0]
   }
 
   for (let ti = 0; ti < out.length; ti++) {
     const team = out[ti]
     // 宁缺不开碎队：第二队起剩余不足一整队即停（其余人进替补）
     if (ti > 0 && sup.length + dps.length < TEAM_SIZE) break
-    const usedJobs = new Set<string>()
     const minSup = team.minSup ?? 1
     const minDps = team.minDps ?? 0
     // ① 保证最少辅助数
@@ -132,7 +106,7 @@ export function assignByLimits(
       roleCount(team.items, "support") < minSup &&
       sup.length
     ) {
-      const it = take(sup, team.healLimit, usedJobs)
+      const it = take(sup, team.healLimit)
       if (!it) break
       team.items.push(it)
     }
@@ -142,13 +116,13 @@ export function assignByLimits(
       roleCount(team.items, "dps") < minDps &&
       dps.length
     ) {
-      const it = take(dps, team.damageLimit, usedJobs)
+      const it = take(dps, team.damageLimit)
       if (!it) break
       team.items.push(it)
     }
     // ③ 剩余空位仅以输出补满（辅助不超过 minSup，宁缺不超编）
     while (team.items.length < TEAM_SIZE && dps.length) {
-      const it = take(dps, team.damageLimit, usedJobs)
+      const it = take(dps, team.damageLimit)
       if (!it) break
       team.items.push(it)
     }

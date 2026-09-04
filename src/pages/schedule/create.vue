@@ -256,6 +256,30 @@ function generate() {
   hasGenerated.value = true
 }
 
+/**
+ * 自动补位：把替补区角色插回队伍。仅受“同一成员不可在同一班重复”约束——
+ * 不看门槛/定位，逐班（靠前优先）找“该成员尚未在本班出现”且存在“有空位队伍”的班插入。
+ * 放不下的替补保留在替补区。
+ */
+function autoFillBench() {
+  if (!mergedBench.value.length) return
+  const rest: DraftItem[] = []
+  for (const item of mergedBench.value) {
+    let placed = false
+    for (const wave of waves.value) {
+      if (hasSameMemberInWave(wave, item)) continue // 同班不可重复同一成员
+      const team = wave.teams.find((t) => t.items.length < TEAM_SIZE)
+      if (team) {
+        team.items.push(item)
+        placed = true
+        break
+      }
+    }
+    if (!placed) rest.push(item)
+  }
+  mergedBench.value = rest
+}
+
 /** 按某波门槛重新分配（该波此前手动放入替补的人会重新参与分配并从替补移除） */
 function reassignWave(wave: Wave) {
   const poolIds = new Set(wave.pool.map((p) => p.character.id))
@@ -813,6 +837,15 @@ function save() {
       <div class="create__gen">
         <button class="btn btn--primary" type="button" :disabled="selectedCount === 0" @click="generate">
           自动生成队伍
+        </button>
+        <button
+          class="btn"
+          type="button"
+          :disabled="!hasGenerated || mergedBench.length === 0"
+          @click="autoFillBench"
+          title="把替补区角色插入有空位队伍（仅保证同一成员不在同一班重复）"
+        >
+          自动补位
         </button>
         <span class="create__hint">按模板各队门槛分配（就近补齐）；角色多于模板人数时自动拆成多波</span>
       </div>
