@@ -1,0 +1,95 @@
+/* ============ 主题变量 ============ */
+:root {
+  /* 白天主题 */
+  --app-bg: #ffffff; /* 页面主背景 */
+  --app-surface: #f5f6f7; /* 栏/面板背景 */
+  --app-header-bg: #ffffff; /* 顶栏背景 */
+  --app-text: #1f2329; /* 主文字 */
+  --app-text-secondary: #646a73; /* 次要文字 */
+  --app-border: #e5e6eb; /* 边框 */
+  --app-primary: #1677ff; /* 主题强调色 */
+  --app-shadow: rgba(31, 35, 41, 0.08); /* 阴影 */
+  --app-success: #389e0d;
+  --app-warn: #d48806;
+  --app-danger: #cf1322;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  /* 黑夜主题 */
+  --app-bg: #1d1e1f;
+  --app-surface: #26282b;
+  --app-header-bg: #212326;
+  --app-text: #e6e8eb;
+  --app-text-secondary: #9aa0a6;
+  --app-border: #3a3d42;
+  --app-primary: #5b8ff9;
+  --app-shadow: rgba(0, 0, 0, 0.45);
+  --app-success: #49aa19;
+  --app-warn: #d89614;
+  --app-danger: #ff4d4f;
+  color-scheme: dark;
+}
+
+/* ============ 基础重置 ============ */
+* {
+  padding: 0;
+  margin: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  /* 禁止外层滚动，滚动只发生在应用内部的 router-view 容器中 */
+  overflow: hidden;
+}
+
+html,
+body {
+  background-color: var(--app-bg);
+  color: var(--app-text);
+  font-family: "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  transition:
+    background-color 0.3s ease,
+    color 0.3s ease;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.45);
+}
+
+.dialog {
+  width: min(420px, calc(100vw - 40px));
+  max-height: 86vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 12px;
+  background-color: var(--app-surface);
+  border: 1px solid var(--app-border);
+  box-shadow: 0 12px 32px var(--app-shadow);
+
+  &__title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--app-text);
+  }
+
+  &__ops {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 4px;
+  }
+}

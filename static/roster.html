@@ -1,0 +1,1133 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DNF 角色录入</title>
+    <style>
+      :root {
+        --bg: #f3f4f6;
+        --surface: #ffffff;
+        --border: #e2e4e8;
+        --text: #1f2329;
+        --text2: #6b7280;
+        --primary: #3b6df0;
+        --primary-weak: #e9efff;
+        --dps: #e03131;
+        --support: #2f9e44;
+        --danger: #d64545;
+        --radius: 10px;
+        --shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #14161a;
+          --surface: #1e2126;
+          --border: #2d3138;
+          --text: #e7eaee;
+          --text2: #9aa1ab;
+          --primary: #6b93ff;
+          --primary-weak: #1f2b4d;
+          --danger: #ef6a6a;
+          --shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.5;
+      }
+      .wrap {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 20px 16px 60px;
+      }
+      header.top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      header.top h1 {
+        font-size: 20px;
+        margin: 0;
+      }
+      header.top .sub {
+        color: var(--text2);
+        font-size: 13px;
+        margin-top: 2px;
+      }
+      .stats {
+        font-size: 13px;
+        color: var(--text2);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 6px 12px;
+        box-shadow: var(--shadow);
+      }
+      .stats b {
+        color: var(--text);
+        margin: 0 2px;
+      }
+      .stats .dps {
+        color: var(--dps);
+      }
+      .stats .sup {
+        color: var(--support);
+      }
+      .toolbar {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin: 18px 0 12px;
+      }
+      button,
+      .btn {
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        padding: 6px 14px;
+        border-radius: 8px;
+        font-size: 13px;
+        cursor: pointer;
+        transition: 0.15s;
+      }
+      button:hover,
+      .btn:hover {
+        border-color: var(--primary);
+        color: var(--primary);
+      }
+      button.primary {
+        background: var(--primary);
+        border-color: var(--primary);
+        color: #fff;
+      }
+      button.primary:hover {
+        filter: brightness(1.06);
+        color: #fff;
+      }
+      button.danger {
+        color: var(--danger);
+      }
+      button.danger:hover {
+        border-color: var(--danger);
+        color: var(--danger);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .member {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        margin-bottom: 14px;
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+      .member-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        border-bottom: 1px dashed var(--border);
+        flex-wrap: wrap;
+      }
+      .member-head .lbl {
+        font-size: 13px;
+        color: var(--text2);
+      }
+      .member-head input[type="text"] {
+        flex: 1;
+        min-width: 140px;
+      }
+      .member-head .mcount {
+        font-size: 12px;
+        color: var(--text2);
+      }
+      .member-head .mcount .dps {
+        color: var(--dps);
+      }
+      .member-head .mcount .sup {
+        color: var(--support);
+      }
+      .check {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 13px;
+        color: var(--text2);
+      }
+      input[type="text"],
+      input[type="number"],
+      select {
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        border-radius: 7px;
+        padding: 5px 8px;
+        font-size: 13px;
+        outline: none;
+      }
+      input:focus,
+      select:focus {
+        border-color: var(--primary);
+      }
+      input.invalid {
+        border-color: var(--danger);
+        box-shadow: 0 0 0 1px var(--danger);
+      }
+
+      .chars {
+        padding: 10px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .char-row {
+        display: grid;
+        grid-template-columns: 1.1fr 0.8fr 1.2fr 0.8fr 0.9fr auto;
+        gap: 8px;
+        align-items: center;
+        padding: 8px 10px;
+        background: var(--bg);
+        border-radius: 8px;
+        border: 1px solid var(--border);
+      }
+      @media (max-width: 720px) {
+        .char-row {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+      .char-row .rt {
+        font-size: 12px;
+        padding: 4px 8px;
+        border-radius: 6px;
+        white-space: nowrap;
+        font-weight: 600;
+      }
+      .rt.dps {
+        background: color-mix(in srgb, var(--dps) 15%, transparent);
+        color: var(--dps);
+      }
+      .rt.sup {
+        background: color-mix(in srgb, var(--support) 15%, transparent);
+        color: var(--support);
+      }
+      .char-row .fld {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .char-row .fld small {
+        font-size: 11px;
+        color: var(--text2);
+      }
+      .char-row input,
+      .char-row select {
+        width: 100%;
+      }
+      .char-row .del {
+        background: none;
+        border: none;
+        color: var(--text2);
+        font-size: 16px;
+        cursor: pointer;
+        padding: 2px 6px;
+      }
+      .char-row .del:hover {
+        color: var(--danger);
+      }
+      .add-char {
+        align-self: flex-start;
+      }
+
+      .empty-tip {
+        text-align: center;
+        color: var(--text2);
+        font-size: 14px;
+        padding: 40px 10px;
+        border: 1px dashed var(--border);
+        border-radius: var(--radius);
+      }
+
+      /* 提交条 + 接口面板 */
+      .submit-bar {
+        position: sticky;
+        bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 10px 14px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+        margin-top: 18px;
+      }
+      .submit-bar .msg {
+        font-size: 12px;
+        color: var(--text2);
+        flex: 1;
+        min-width: 200px;
+      }
+      .submit-bar .msg.ok {
+        color: var(--support);
+      }
+      .submit-bar .msg.err {
+        color: var(--danger);
+      }
+
+      details.api {
+        margin-top: 16px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 6px 14px 12px;
+      }
+      details.api summary {
+        cursor: pointer;
+        font-size: 13px;
+        color: var(--text2);
+        padding: 8px 0;
+      }
+      pre.code {
+        background: #0f1216;
+        color: #d6e2f0;
+        border-radius: 8px;
+        padding: 12px;
+        overflow: auto;
+        font-size: 12px;
+        line-height: 1.6;
+        margin: 6px 0;
+      }
+      textarea.export {
+        width: 100%;
+        min-height: 120px;
+        font-family: Consolas, monospace;
+        font-size: 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg);
+        color: var(--text);
+        padding: 8px;
+        resize: vertical;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="top">
+        <div>
+          <h1>DNF 角色录入 <span style="font-size: 12px; color: var(--text2)">(静态页 · 预留接口)</span></h1>
+          <div class="sub">录入成员与其名下角色，可导出为应用可导入的 JSON，或经下方“预留接口”提交</div>
+        </div>
+        <div class="stats" id="stats"></div>
+      </header>
+
+      <div class="toolbar">
+        <button id="btnAddMember" class="primary">＋ 添加成员</button>
+        <button id="btnExample">填入示例</button>
+        <button id="btnImport">导入 JSON</button>
+        <button id="btnExport">导出 JSON</button>
+        <button id="btnClear" class="danger">清空全部</button>
+        <span style="flex: 1"></span>
+        <span id="draftState" style="font-size: 12px; color: var(--text2)"></span>
+      </div>
+
+      <!-- 导入面板（默认隐藏） -->
+      <div
+        id="importPanel"
+        hidden
+        style="
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: var(--radius);
+          padding: 12px;
+          margin-bottom: 14px;
+        "
+      >
+        <div style="font-size: 13px; color: var(--text2); margin-bottom: 6px">
+          粘贴成员数组 JSON（兼容 <code>{nickname, schedulable?, characters:[...]}</code>，字符字段支持
+          昵称/职业/名望/伤害·奶量 别名），将<strong>追加</strong>到当前列表：
+        </div>
+        <textarea
+          id="importText"
+          class="export"
+          placeholder='[{"nickname":"小明","characters":[{"nickname":"小明-红眼","roleType":"输出","job":"红眼","fame":52000,"damage":900}]}]'
+        ></textarea>
+        <div style="margin-top: 8px; display: flex; gap: 8px">
+          <button id="btnImportOk" class="primary">导入</button>
+          <button id="btnImportCancel">取消</button>
+          <span id="importMsg" style="font-size: 12px; color: var(--text2)"></span>
+        </div>
+      </div>
+
+      <!-- 导出面板（默认隐藏） -->
+      <div
+        id="exportPanel"
+        hidden
+        style="
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: var(--radius);
+          padding: 12px;
+          margin-bottom: 14px;
+        "
+      >
+        <div style="font-size: 13px; color: var(--text2); margin-bottom: 6px">
+          生成的成员 JSON —— 可复制后到主应用「成员管理 → 导入角色」粘贴/保存，或下载到本地：
+        </div>
+        <textarea id="exportText" class="export" readonly></textarea>
+        <div style="margin-top: 8px; display: flex; gap: 8px">
+          <button id="btnCopy" class="primary">复制</button>
+          <button id="btnDownload">下载 .json</button>
+          <button id="btnExportClose">关闭</button>
+        </div>
+      </div>
+
+      <!-- 成员列表 -->
+      <div id="members"></div>
+
+      <!-- 提交条 -->
+      <!-- <div class="submit-bar">
+    <button id="btnSubmit" class="primary">提交录入</button>
+    <span class="msg" id="submitMsg">数据尚未提交</span>
+  </div> -->
+
+      <!-- 接口预留说明 -->
+      <!-- <details class="api">
+    <summary>⚙ 接口接入点（当前为占位实现，接入后端/主应用只需改这里）</summary>
+    <pre class="code" id="apiCode"></pre>
+    <div style="font-size:12px;color:var(--text2)">
+      <p>接入思路（任选其一，在下方 <code>submitRoster()</code> 的 TODO 处实现）：</p>
+      <ul style="margin:4px 0 8px;padding-left:18px;">
+        <li><b>HTTP 后端</b>：把 JSON POST 到你的服务端 URL，等待返回结果；</li>
+        <li><b>Tauri 命令</b>：若此页被打包进桌面应用，可调用 Rust 命令保存到应用数据文件；</li>
+        <li><b>与主应用共享</b>：同源时可直接写入主应用的 localStorage 键（把 members 合并进
+            <code>dnf_schedule_data</code>），刷新主应用即可见。</li>
+      </ul>
+    </div>
+  </details> -->
+
+      <footer style="text-align: center; color: var(--text2); font-size: 12px; margin-top: 20px">
+        数据仅保存在本页 localStorage（草稿）+ 你主动导出的文件/接口，关闭页面请先导出，避免丢失。
+      </footer>
+    </div>
+
+    <script>
+      "use strict"
+      /* =========================================================
+       * 静态录入页：数据模型与主应用保持一致
+       *   Member   { nickname, schedulable, chars:[Character] }
+       *   Character{ nickname, roleType: 'dps'|'support', job, fame, score }
+       *   导出格式可直接被「成员管理 → 导入角色」识别
+       * ========================================================= */
+
+      /* ---------- 1. 状态 ---------- */
+      var members = [] // [{id,nickname,schedulable,chars:[{id,nickname,roleType,job,fame,score}]}]
+      var uidSeq = 1
+      function nid() {
+        return "m" + (uidSeq++).toString(36) + Math.random().toString(36).slice(2, 5)
+      }
+
+      var LS_KEY = "static_roster_draft" // 本地草稿
+
+      /* ---------- 2. DOM ---------- */
+      var elMembers = document.getElementById("members")
+      var elStats = document.getElementById("stats")
+      var elSubmitMsg = document.getElementById("submitMsg")
+      var elDraft = document.getElementById("draftState")
+
+      /* ---------- 3. 常用职业建议 ---------- */
+      var JOB_SUG = [
+        "红眼",
+        "剑魂",
+        "瞎子",
+        "鬼泣",
+        "剑鬼",
+
+        "剑宗",
+        "剑帝",
+        "剑魔",
+        "暗帝",
+        "刃影",
+
+        "男街霸",
+        "男气功",
+        "男柔道",
+        "乌鸡",
+
+        "女街霸",
+        "女柔道",
+        "女气功",
+        "武神",
+
+        "男漫游",
+        "男机械",
+        "男大枪",
+        "男弹药",
+        "合金",
+
+        "女漫游",
+        "女机械",
+        "女大枪",
+        "女弹药",
+
+        "四叔",
+        "蓝拳",
+        "驱魔",
+
+        "四姨",
+        "女拳",
+        "泥鳅奶",
+        "放火奶",
+
+        "魔皇",
+        "冰姐",
+        "血法",
+        "次元",
+        "风法",
+
+        "元素",
+        "召唤",
+        "战法",
+        "魔道",
+
+        "关羽",
+        "赵云",
+        "光枪",
+        "暗枪",
+
+        "帕拉甲",
+        "帕拉乙",
+        "帕拉丙",
+        "帕拉丁",
+
+        "死灵",
+        "刺客",
+        "忍者",
+        "鹦鹉",
+
+        "暗刃",
+        "佣兵",
+        "源神",
+        "特工",
+
+        "旅人",
+        "猎人",
+        "妖护使",
+        "奇美拉",
+
+        "破浪者",
+
+        "鼠标妹",
+        "尬舞男",
+
+        "奶爸",
+        "奶妈",
+        "奶萝",
+        "奶弓",
+        "奶枪",
+      ]
+
+      /* ---------- 4. 工具 ---------- */
+      function esc(s) {
+        return String(s == null ? "" : s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+      }
+      function statCounts() {
+        var mCnt = 0,
+          cCnt = 0,
+          dps = 0,
+          sup = 0
+        members.forEach(function (m) {
+          if (m.nickname.trim()) mCnt++
+          m.chars.forEach(function (c) {
+            if (!c.nickname.trim()) return
+            cCnt++
+            if (c.roleType === "dps") dps++
+            else sup++
+          })
+        })
+        return { m: mCnt, c: cCnt, dps: dps, sup: sup }
+      }
+      function renderStats() {
+        var s = statCounts()
+        elStats.innerHTML =
+          "成员 <b>" +
+          s.m +
+          "</b> · 角色 <b>" +
+          s.c +
+          "</b> · " +
+          "输出 <b class='dps'>" +
+          s.dps +
+          "</b> · 辅助 <b class='sup'>" +
+          s.sup +
+          "</b>"
+      }
+
+      function msg(text, cls) {
+        elSubmitMsg.textContent = text
+        elSubmitMsg.className = "msg" + (cls ? " " + cls : "")
+      }
+
+      /* ---------- 5. 主渲染 ---------- */
+      function addMember(m) {
+        var x = m || { id: nid(), nickname: "", schedulable: true, chars: [] }
+        members.push(x)
+        render()
+        return x
+      }
+      function addChar(mi) {
+        members[mi].chars.push({ id: nid(), nickname: "", roleType: "dps", job: "", fame: "", score: "" })
+        render()
+      }
+      function removeChar(mi, ci) {
+        members[mi].chars.splice(ci, 1)
+        render()
+      }
+      function removeMember(mi) {
+        members.splice(mi, 1)
+        render()
+      }
+
+      function rtText(t) {
+        return t === "support" ? "辅助" : "输出"
+      }
+      function statName(t) {
+        return t === "support" ? "奶量" : "伤害(千亿)"
+      }
+      function jobSuggest(t) {
+        return JOB_SUG
+      } // 单列表供 datalist
+
+      function render() {
+        if (!members.length) {
+          elMembers.innerHTML = '<div class="empty-tip">还没有成员 — 点上方「＋ 添加成员」开始录入</div>'
+        } else {
+          var html = ""
+          members.forEach(function (m, mi) {
+            var badNick = !m.nickname.trim()
+            html +=
+              '<section class="member" data-mi="' +
+              mi +
+              '">' +
+              '  <div class="member-head">' +
+              '    <label class="lbl">成员昵称</label>' +
+              '    <input type="text" placeholder="如：小明" value="' +
+              esc(m.nickname) +
+              '"' +
+              '      class="' +
+              (badNick ? "invalid" : "") +
+              '" data-f="nick">' +
+              '    <label class="check"><input type="checkbox" data-f="schedulable"' +
+              (m.schedulable ? " checked" : "") +
+              "> 可排班</label>" +
+              '    <span class="mcount">' +
+              m.chars.length +
+              " 角色</span>" +
+              '    <button class="danger" data-act="delMember">删除成员</button>' +
+              "  </div>" +
+              '  <div class="chars">'
+            if (!m.chars.length) {
+              html += '<div style="font-size:12px;color:var(--text2)">（无角色）</div>'
+            }
+            m.chars.forEach(function (c, ci) {
+              var isSup = c.roleType === "support"
+              var badC = !c.nickname.trim() || !c.job.trim()
+              html +=
+                '  <div class="char-row" data-ci="' +
+                ci +
+                '">' +
+                '    <div class="fld"><small>角色昵称' +
+                (c.nickname.trim() ? "" : "（必填）") +
+                "</small>" +
+                '      <input type="text" placeholder="如：小明-红眼" value="' +
+                esc(c.nickname) +
+                '" data-f="nick" class="' +
+                (badC && !c.nickname.trim() ? "invalid" : "") +
+                '"></div>' +
+                '    <div class="fld"><small>定位</small>' +
+                '      <select data-f="roleType">' +
+                '        <option value="dps"' +
+                (c.roleType === "dps" ? " selected" : "") +
+                ">输出</option>" +
+                '        <option value="support"' +
+                (isSup ? " selected" : "") +
+                ">辅助</option>" +
+                "      </select></div>" +
+                '    <div class="fld"><small>职业' +
+                (c.job.trim() ? "" : "（必填）") +
+                "</small>" +
+                '      <input type="text" list="jobList" placeholder="如：红眼" value="' +
+                esc(c.job) +
+                '" data-f="job" class="' +
+                (badC && !c.job.trim() ? "invalid" : "") +
+                '"></div>' +
+                '    <div class="fld"><small>名望</small><input type="number" min="0" placeholder="52000" value="' +
+                esc(c.fame) +
+                '" data-f="fame"></div>' +
+                '    <div class="fld"><small>' +
+                statName(c.roleType) +
+                "</small>" +
+                '      <input type="number" min="0" placeholder="0" value="' +
+                esc(c.score) +
+                '" data-f="score"></div>' +
+                '    <button class="del" title="删除角色" data-act="delChar">✕</button>' +
+                "  </div>"
+            })
+            html += '    <button class="add-char" data-act="addChar">＋ 添加角色</button>' + "  </div></section>"
+          })
+          elMembers.innerHTML = html
+        }
+        renderStats()
+        updateDraftState()
+        scheduleDraft() // 结构变化（增/删/示例/清空）也会自动落本地草稿
+      }
+
+      /* 事件委托：输入即写回 model，避免丢焦点；结构性操作调用 render() */
+      document.addEventListener("click", function (e) {
+        var t = e.target.closest ? e.target.closest("[data-act]") : null
+        if (!t || !elMembers.contains(t)) return
+        var mi = Number(t.closest(".member").dataset.mi)
+        var ci = t.closest(".char-row") ? Number(t.closest(".char-row").dataset.ci) : null
+        switch (t.dataset.act) {
+          case "delMember":
+            removeMember(mi)
+            break
+          case "addChar":
+            addChar(mi)
+            break
+          case "delChar":
+            removeChar(mi, ci)
+            break
+        }
+      })
+
+      elMembers.addEventListener("input", function (e) {
+        var el = e.target
+        var f = el.dataset && el.dataset.f
+        if (!f) return
+        var card = el.closest(".member")
+        var mi = Number(card.dataset.mi)
+        if (el.closest(".char-row")) {
+          var ci = Number(el.closest(".char-row").dataset.ci)
+          var c = members[mi].chars[ci]
+          if (f === "nick") c.nickname = el.value
+          else if (f === "job") c.job = el.value
+          else if (f === "fame") c.fame = el.value
+          else if (f === "score") c.score = el.value
+        } else {
+          if (f === "nick") members[mi].nickname = el.value
+        }
+        scheduleDraft()
+      })
+
+      elMembers.addEventListener("change", function (e) {
+        var el = e.target
+        var f = el.dataset && el.dataset.f
+        if (!f) return
+        var card = el.closest(".member")
+        var mi = Number(card.dataset.mi)
+        var row = el.closest(".char-row")
+        if (row) {
+          var ci = Number(row.dataset.ci)
+          if (f === "roleType") {
+            members[mi].chars[ci].roleType = el.value
+            render()
+          }
+        } else if (f === "schedulable") {
+          members[mi].schedulable = el.checked
+          scheduleDraft()
+        }
+        render()
+      })
+
+      /* ---------- 6. 工具栏 ---------- */
+      document.getElementById("btnAddMember").onclick = function () {
+        addMember()
+      }
+      document.getElementById("btnClear").onclick = function () {
+        if (!members.length || confirm("确定清空全部录入？")) {
+          members = []
+          render()
+        }
+      }
+      document.getElementById("btnExample").onclick = function () {
+        members = members.concat(exampleMembers())
+        render()
+      }
+
+      function exampleMembers() {
+        return [
+          {
+            nickname: "小明",
+            schedulable: true,
+            chars: [
+              { nickname: "小明-红眼", roleType: "dps", job: "红眼", fame: 52800, score: 950 },
+              { nickname: "小明-奶妈", roleType: "support", job: "奶妈", fame: 36200, score: 6800 },
+            ],
+          },
+          {
+            nickname: "小红",
+            schedulable: true,
+            chars: [{ nickname: "小红-剑魂", roleType: "dps", job: "剑魂", fame: 51900, score: 900 }],
+          },
+          {
+            nickname: "小刚",
+            schedulable: false,
+            chars: [{ nickname: "小刚-奶爸", roleType: "support", job: "奶爸", fame: 37000, score: 7200 }],
+          },
+        ]
+      }
+
+      /* ---------- 7. 导入 / 导出 ---------- */
+      function show(id, on) {
+        document.getElementById(id).hidden = !on
+      }
+
+      document.getElementById("btnImport").onclick = function () {
+        document.getElementById("importMsg").textContent = ""
+        show("exportPanel", false)
+        show("importPanel", true)
+        document.getElementById("importText").focus()
+      }
+      document.getElementById("btnImportCancel").onclick = function () {
+        show("importPanel", false)
+      }
+      document.getElementById("btnImportOk").onclick = function () {
+        var res = parseRoster(document.getElementById("importText").value)
+        if (res.ok) {
+          res.groups.forEach(function (g) {
+            addMember({ nickname: g.nickname, schedulable: g.schedulable, chars: g.chars })
+          })
+          document.getElementById("importMsg").innerHTML =
+            "✅ 导入 " +
+            res.groups.length +
+            " 个成员 / " +
+            res.charTotal +
+            " 个角色" +
+            (res.warns.length ? "<br>⚠ " + res.warns.join("；") : "")
+          show("importPanel", false)
+          scheduleDraft()
+        } else {
+          document.getElementById("importMsg").textContent = "❌ " + res.err
+        }
+      }
+
+      document.getElementById("btnExport").onclick = function () {
+        var clean = toExport()
+        show("importPanel", false)
+        show("exportPanel", true)
+        // 导出为可直接粘贴到「成员管理 → 导入角色」的纯成员数组
+        document.getElementById("exportText").value = JSON.stringify(clean.groups, null, 2)
+        var tag = document.getElementById("exportPanel").querySelector("div")
+        var cnt = clean.warns.length
+        tag.innerHTML = cnt
+          ? "生成的成员 JSON（<span style='color:var(--danger)'>" +
+            cnt +
+            " 条跳过提示</span>）—— 可复制后到主应用「成员管理 → 导入角色」粘贴/保存，或下载到本地："
+          : "生成的成员 JSON —— 可复制后到主应用「成员管理 → 导入角色」粘贴/保存，或下载到本地："
+      }
+      document.getElementById("btnExportClose").onclick = function () {
+        show("exportPanel", false)
+      }
+      document.getElementById("btnCopy").onclick = function () {
+        var ta = document.getElementById("exportText")
+        ta.select()
+        var ok = false
+        try {
+          ok = document.execCommand("copy")
+        } catch (e) {
+          ok = false
+        }
+        if (!ok && navigator.clipboard) {
+          navigator.clipboard.writeText(ta.value).then(
+            function () {},
+            function () {},
+          )
+          ok = true
+        }
+        ta.setAttribute("readonly", "readonly")
+        msg(ok ? "已复制到剪贴板 ✅" : "请手动 Ctrl+C 复制", "ok")
+      }
+      document.getElementById("btnDownload").onclick = function () {
+        var blob = new Blob([document.getElementById("exportText").value], { type: "application/json" })
+        var a = document.createElement("a")
+        a.href = URL.createObjectURL(blob)
+        a.download = "roster.json"
+        a.click()
+        setTimeout(function () {
+          URL.revokeObjectURL(a.href)
+        }, 1000)
+      }
+
+      /* 清洗并生成可导出的成员数组（去空昵称成员 / 空角色），返回 {groups, warns} */
+      function toExport() {
+        var warns = []
+        var groups = []
+        members.forEach(function (m, mi) {
+          if (!m.nickname.trim()) {
+            warns.push("第 " + (mi + 1) + " 位成员昵称为空，已跳过")
+            return
+          }
+          var chars = []
+          m.chars.forEach(function (c, ci) {
+            var name = c.nickname.trim()
+            var job = c.job.trim()
+            if (!name && !job && c.fame === "" && c.score === "") return // 完全空行忽略
+            if (!name) {
+              warns.push("成员「" + m.nickname + "」第 " + (ci + 1) + " 个角色缺昵称，已跳过")
+              return
+            }
+            if (!job) {
+              warns.push("角色「" + name + "」缺职业，已跳过")
+              return
+            }
+            chars.push({
+              nickname: name,
+              roleType: c.roleType,
+              job: job,
+              fame: Number(c.fame) || 0,
+              score: Number(c.score) || 0,
+            })
+          })
+          if (chars.length)
+            groups.push({ nickname: m.nickname.trim(), schedulable: !!m.schedulable, characters: chars })
+          else warns.push("成员「" + m.nickname + "」没有任何有效角色，已跳过")
+        })
+        return { groups: groups, warns: warns }
+      }
+
+      /* 简易 JSON 导入（兼容主应用字段别名） */
+      function parseRoster(text) {
+        function pick(o, keys) {
+          for (var i = 0; i < keys.length; i++) {
+            var v = o[keys[i]]
+            if (v !== undefined && v !== null && String(v).trim() !== "") return v
+          }
+          return undefined
+        }
+        function toNum(v) {
+          var n = Number(v)
+          return isFinite(n) ? n : 0
+        }
+        function role(s) {
+          var t = String(s).toLowerCase()
+          return /(辅助|奶|support|辅)/.test(t) ? "support" : /(输出|伤害|dps|攻)/.test(t) ? "dps" : null
+        }
+        function parseChar(o, tag) {
+          var name = pick(o, ["nickname", "name", "昵称", "角色名", "角色昵称", "charName"])
+          var job = pick(o, ["job", "职业", "细分职业", "职业名"])
+          var rt = pick(o, ["roleType", "role", "type", "定位", "kind"])
+          rt =
+            rt !== undefined
+              ? role(String(rt))
+              : pick(o, ["damage", "dps", "伤害", "score"]) !== undefined
+                ? "dps"
+                : "support"
+          if (!name) return { err: tag + " 缺昵称" }
+          if (!job) return { err: "角色「" + name + "」缺职业" }
+          var score = pick(o, ["score", "damage", "dps", "伤害", "输出", "heal", "奶量"]) || 0
+          return {
+            c: {
+              nickname: String(name).trim(),
+              roleType: rt || "dps",
+              job: String(job).trim(),
+              fame: toNum(pick(o, ["fame", "名望"])),
+              score: toNum(score),
+            },
+          }
+        }
+        var root,
+          warns = []
+        try {
+          root = JSON.parse(text)
+        } catch (e) {
+          return { ok: false, err: "JSON 解析失败：" + e.message }
+        }
+        if (root === null || typeof root !== "object") return { ok: false, err: "内容应为对象或数组" }
+        var items = Array.isArray(root) ? root : Array.isArray(root.members) ? root.members : null
+        if (!items) return { ok: false, err: "无法识别：请使用成员数组，或 {members:[...]}" }
+        var groups = [],
+          charTotal = 0
+        items.forEach(function (it, i) {
+          if (!it || typeof it !== "object") {
+            warns.push("第 " + (i + 1) + " 条不是对象")
+            return
+          }
+          var list = pick(it, ["characters", "角色", "roles", "角色列表"])
+          var nick = it.nickname || it.name || it.昵称 || it.member || it.memberName || "成员" + (i + 1)
+          var sched = !/^(false|0|no|不可以|不可排)$/i.test(
+            String(it.schedulable != null ? it.schedulable : it["可排班"]),
+          )
+          if (list === undefined) {
+            // 该项本身是一条角色 → 归属到该“成员名”
+            var r = parseChar(it, "第 " + (i + 1) + " 条")
+            if (r.err) {
+              warns.push(r.err)
+              return
+            }
+            var g = null
+            for (var k = 0; k < groups.length; k++) if (groups[k].nickname === nick) g = groups[k]
+            if (!g) {
+              g = { nickname: String(nick), schedulable: sched, chars: [] }
+              groups.push(g)
+            }
+            g.chars.push(r.c)
+            charTotal++
+            return
+          }
+          var chars = []
+          if (!Array.isArray(list)) {
+            warns.push("「" + nick + "」的 characters 不是数组")
+            return
+          }
+          list.forEach(function (c, j) {
+            var r = parseChar(c, "「" + nick + "」第 " + (j + 1) + " 个角色")
+            if (r.err) warns.push(r.err)
+            else {
+              chars.push(r.c)
+              charTotal++
+            }
+          })
+          if (chars.length) groups.push({ nickname: String(nick).trim(), schedulable: sched, chars: chars })
+        })
+        return { ok: true, groups: groups, warns: warns, charTotal: charTotal }
+      }
+
+      /* ---------- 8. 提交（★ 接口预留位置） ---------- */
+
+      /**
+       * ★★★ 接口预留：把整理好的录入数据提交到你的接收端 ★★★
+       *
+       * payload 结构（成员数组，字段与主应用一致）：
+       *   [{ nickname, schedulable, characters: [{ nickname, roleType:'dps'|'support',
+       *                                            job, fame, score }] }]
+       *
+       * 当前为占位实现 —— 只做本地兜底：把数据暂存并提示“接口未配置”。
+       * 接入时请把下方 TODO 替换为你的逻辑，例如：
+       *
+       *   [方案 A] HTTP 后端：
+       *     const API_URL = "https://your-server.example/api/roster"; // ← 填入你的地址
+       *     const resp = await fetch(API_URL, {
+       *       method: "POST",
+       *       headers: { "Content-Type": "application/json" },
+       *       body: JSON.stringify({ roster: payload }),
+       *     });
+       *     if (!resp.ok) throw new Error("HTTP " + resp.status);
+       *     return { ok: true, msg: "已提交到服务端 ✅" };
+       *
+       *   [方案 B] Tauri 桌面端（若本页被打包进应用）：
+       *     if (window.__TAURI_INTERNALS__) {
+       *       const { invoke } = await import("@tauri-apps/api/core"); // 或动态 import
+       *       await invoke("save_roster", { roster: payload });        // Rust 端 #[tauri::command]
+       *       return { ok: true, msg: "已写入应用数据 ✅" };
+       *     }
+       *
+       *   [方案 C] 与主应用共享 localStorage（同源时）：
+       *     const KEY = "dnf_schedule_data";
+       *     const app = JSON.parse(localStorage.getItem(KEY) || "{\"members\":[]}");
+       *     app.members.push(...payload);            // 建议按昵称合并去重
+       *     localStorage.setItem(KEY, JSON.stringify(app));
+       *     return { ok: true, msg: "已合并进主应用数据 ✅" };
+       */
+      async function submitRoster(payload) {
+        /* ====== TODO: 在此接入你的真实接口 ====== */
+        console.info("[roster-submit] 待接入接口，收到数据：", payload)
+
+        // ↓ 占位兜底：仅写本地草稿，避免接入前数据丢失
+        saveDraftNow()
+        return {
+          ok: false,
+          msg: "接口尚未配置：数据已暂存到本页草稿，请先「导出 JSON」，或按上方说明接入 submitRoster() 的 TODO。",
+        }
+      }
+
+      /* 提交按钮 */
+      // document.getElementById("btnSubmit").onclick = function () {
+      //   var clean = toExport()
+      //   if (!clean.groups.length) {
+      //     msg("没有可提交的有效数据（请先填写成员与角色）", "err")
+      //     return
+      //   }
+      //   if (clean.warns.length) msg("有 " + clean.warns.length + " 条跳过提示（详见导出）", "")
+      //   var btn = document.getElementById("btnSubmit")
+      //   btn.disabled = true
+      //   btn.textContent = "提交中…"
+      //   submitRoster(clean.groups)
+      //     .then(function (r) {
+      //       msg((r && r.msg) || "已提交", r && r.ok ? "ok" : "err")
+      //     })
+      //     .catch(function (err) {
+      //       msg("提交出错：" + ((err && err.message) || err), "err")
+      //     })
+      //     .finally(function () {
+      //       btn.disabled = false
+      //       btn.textContent = "提交录入"
+      //     })
+      // }
+
+      /* ---------- 9. 本地草稿（防丢失） ---------- */
+      var draftTimer = null
+      function scheduleDraft() {
+        clearTimeout(draftTimer)
+        draftTimer = setTimeout(saveDraftNow, 300)
+      }
+      function saveDraftNow() {
+        try {
+          localStorage.setItem(LS_KEY, JSON.stringify(members))
+        } catch (e) {}
+        updateDraftState()
+      }
+      function updateDraftState() {
+        try {
+          var n = JSON.parse(localStorage.getItem(LS_KEY) || "[]").length
+          elDraft.textContent = "本地草稿 " + members.length + " 条" + (members.length ? "" : "（空）")
+        } catch (e) {
+          elDraft.textContent = ""
+        }
+      }
+      function loadDraft() {
+        try {
+          var raw = localStorage.getItem(LS_KEY)
+          if (raw) {
+            var arr = JSON.parse(raw)
+            if (Array.isArray(arr) && arr.length) members = arr
+          }
+        } catch (e) {}
+      }
+
+      /* ---------- 10. 启动 ---------- */
+      function boot() {
+        // document.getElementById("apiCode").textContent = submitRoster.toString()
+        // 自动列出所有 datalist 职业
+        var dl = document.createElement("datalist")
+        dl.id = "jobList"
+        JOB_SUG.forEach(function (j) {
+          var o = document.createElement("option")
+          o.value = j
+          dl.appendChild(o)
+        })
+        document.body.appendChild(dl)
+        loadDraft()
+        render()
+        // msg("可在下方录入并提交；接口为占位实现（详见「接口接入点」）", "")
+      }
+      boot()
+    </script>
+  </body>
+</html>
