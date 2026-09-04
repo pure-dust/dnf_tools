@@ -251,7 +251,8 @@ export function splitRounds(
   // 每班先配的辅助数 = 该班最多能组成的满编(4人)队数（保底 1）
   const supPerWave = Math.max(1, Math.floor(seat / TEAM_SIZE))
 
-  const remSup = items.filter(isSup)
+  // 辅助按有效奶量降序：靠前班次（红队所在）优先分到大奶
+  const remSup = items.filter(isSup).sort((a, b) => effOf(b) - effOf(a))
   // 车头池按有效伤害降序：第 1 班先拿全局最高，第 2 班次高 …（保证各班都有最强C）
   const carPool = items.filter(isCar).sort((a, b) => effOf(b) - effOf(a))
   // 普通输出（未达车头限制）

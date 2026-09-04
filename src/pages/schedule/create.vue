@@ -203,7 +203,7 @@ async function loadForEdit(groupKey: string) {
 
   hasGenerated.value = true
   editingGroupKey.value = groupKey
-  pickAreaOpen.value = true // 编辑历史：默认展开成员便于核对
+  // pickAreaOpen.value = true // 编辑历史：默认展开成员便于核对
 }
 
 /* ---------- 可排人选 ---------- */
@@ -296,6 +296,64 @@ interface Wave {
 const waves = ref<Wave[]>([])
 /** 全局合并的替补区（各波的替补统一放这里） */
 const mergedBench = ref<DraftItem[]>([])
+/** 替补区展示排序：先按 辅助→输出 分组，组内再按“相同成员”聚簇（原相对顺序决定成员先后）。
+    仅影响展示，不改动 mergedBench 本身（插入/拖拽逻辑不受影响）。 */
+const sortedBench = computed<DraftItem[]>(() => {
+  const order = new Map<string, number>()
+  mergedBench.value.forEach((it, i) => {
+    if (!order.has(it.memberId)) order.set(it.memberId, i)
+  })
+  const grp = (it: DraftItem) => (it.character.roleType === "support" ? 0 : 1)
+  return [...mergedBench.value].sort((a, b) => {
+    const ga = grp(a)
+    const gb = grp(b)
+    if (ga !== gb) return ga - gb
+    return (order.get(a.memberId) ?? 0) - (order.get(b.memberId) ?? 0)
+  })
+})
+/** 把已排序的替补折成“同角色组+同成员”的小组块；组内角色按输出伤害/奶量从高到低排列 */
+const benchBlocks = computed(() => {
+  const out: { roleType: string; memberId: string; items: DraftItem[] }[] = []
+  for (const it of sortedBench.value) {
+    const last = out[out.length - 1]
+    if (last && last.memberId === it.memberId && last.roleType === it.character.roleType) last.items.push(it)
+    else out.push({ roleType: it.character.roleType, memberId: it.memberId, items: [it] })
+  }
+  out.forEach((b) => {
+    b.items.sort(
+      (x, y) =>
+        effScore(y.character.job, y.character.score) - effScore(x.character.job, x.character.score),
+    )
+  })
+  return out
+})
+
+/** 当前高亮成员（在“参与成员”面板点选） */
+const hlMember = ref<string | null>(null)
+
+/** 参与排班的成员：出现在任意队伍或替补中的不同成员 */
+const partMembers = computed(() => {
+  const order: string[] = []
+  const count = new Map<string, number>()
+  const touch = (it: DraftItem) => {
+    if (!count.has(it.memberId)) {
+      count.set(it.memberId, 0)
+      order.push(it.memberId)
+    }
+    count.set(it.memberId, count.get(it.memberId)! + 1)
+  }
+  waves.value.forEach((w) => w.teams.forEach((t) => t.items.forEach(touch)))
+  mergedBench.value.forEach(touch)
+  return order.map((id) => {
+    const mem = store.data.members.find((m) => m.id === id)
+    return { id, name: mem?.nickname || id, count: count.get(id) ?? 0 }
+  })
+})
+
+function toggleHlMember(id: string) {
+  hlMember.value = hlMember.value === id ? null : id
+}
+
 const hasGenerated = ref(false)
 /** 编辑历史“整组”时的原组 key；保存时覆盖该组旧记录 */
 const editingGroupKey = ref<string | null>(null)
@@ -571,7 +629,8 @@ function hasSameMemberInWave(wave: Wave, item: DraftItem) {
   return wave.teams.some((t) => t.items.some((i) => i.memberId === item.memberId))
 }
 
-/** 丢到某队成员上：队伍内=调整顺序/跨队交换；替补→队=插入 */
+/** 丢到某队成员上：同波=排序/跨队交换；替补=放入（队内同人→替换）；跨波=与目标角色交换。
+    只受“每波同人唯一”与“每队≤4人”约束，不做门槛/车头限制。 */
 function dropOnMember(ev: DropLike, wave: Wave, teamIdx: number, targetIdx: number) {
   ev.preventDefault()
   ev.stopPropagation?.()
@@ -585,52 +644,92 @@ function dropOnMember(ev: DropLike, wave: Wave, teamIdx: number, targetIdx: numb
   const targ = targetItems[targetIdx]
 
   if (s.kind === "bench") {
-    if (hasSameMemberInWave(wave, s.item)) {
-      alert("该成员已有角色在本波，不能重复放入")
-      endDrag()
-      return
-    }
-    if (targetItems.length >= TEAM_SIZE) {
-      alert("该队已满 4 人，无法从替补放入")
+    // 当前队伍内已有该成员的另一角色 → 把它放回替补，实现“换号/替换”
+    const dupInTeam = targetItems.find((x) => x.memberId === s.item.memberId)
+    if (dupInTeam) {
+      targetItems.splice(targetItems.indexOf(dupInTeam), 1)
+      mergedBench.value.push(dupInTeam)
+    } else if (hasSameMemberInWave(wave, s.item)) {
+      alert("该成员已有角色在本波（不在当前队伍），不能放入")
       endDrag()
       return
     }
     popMergedBench(s.item)
+    if (targetItems.length >= TEAM_SIZE) {
+      const last = targetItems.pop()!
+      mergedBench.value.push(last) // 满员：队末一位挤出到替补
+    }
     targetItems.splice(Math.min(targetIdx, targetItems.length), 0, s.item)
     endDrag()
     return
   }
 
-  // 队伍内拖拽仅限同波
-  if (!s.wave || s.wave !== wave) {
+  const srcWave = s.wave
+  if (!srcWave) {
     endDrag()
     return
   }
-  const srcItems = s.wave.teams[s.teamIdx].items
-  if (s.teamIdx === teamIdx) {
-    const i = srcItems.indexOf(s.item)
-    if (i >= 0) {
-      srcItems.splice(i, 1)
-      srcItems.splice(Math.min(targetIdx, srcItems.length), 0, s.item)
+  const srcItems = srcWave.teams[s.teamIdx].items
+
+  // 同波：队伍内排序，或同波跨队（交换/移动）
+  if (srcWave === wave) {
+    if (s.teamIdx === teamIdx) {
+      const i = srcItems.indexOf(s.item)
+      if (i >= 0) {
+        srcItems.splice(i, 1)
+        srcItems.splice(Math.min(targetIdx, srcItems.length), 0, s.item)
+      }
+    } else {
+      const i = srcItems.indexOf(s.item)
+      if (i >= 0 && targ) {
+        const j = targetItems.indexOf(targ)
+        srcItems.splice(i, 1)
+        targetItems.splice(j, 1)
+        srcItems.push(targ)
+        targetItems.splice(Math.min(targetIdx, targetItems.length), 0, s.item)
+      }
     }
     endDrag()
     return
   }
-  // 同波跨队交换
-  const i = srcItems.indexOf(s.item)
-  if (i < 0 || !targ) {
+
+  // 跨波拖到“单个角色”上 → 与该角色交换：
+  //   相同成员：直接对调（同人两个号互换波）
+  //   不同成员：对调后若某波会出现同人重复则不满足规则 → 拒绝
+  const M = s.item
+  const N = targ
+  if (!N) {
     endDrag()
     return
   }
-  const j = targetItems.indexOf(targ)
-  srcItems.splice(i, 1)
-  targetItems.splice(j, 1)
-  srcItems.push(targ)
-  targetItems.splice(Math.min(targetIdx, targetItems.length), 0, s.item)
+  const si = srcItems.indexOf(M)
+  if (si < 0) {
+    endDrag()
+    return
+  }
+  const ni = targetItems.indexOf(N)
+  if (ni < 0) {
+    endDrag()
+    return
+  }
+  if (M.memberId !== N.memberId) {
+    const srcHasN = srcWave.teams.some((t) => t.items.some((x) => x.memberId === N.memberId))
+    const tarHasM = wave.teams.some((t) => t.items.some((x) => x.memberId === M.memberId))
+    if (srcHasN || tarHasM) {
+      alert("交换后某个波次会出现同人重复，无法交换")
+      endDrag()
+      return
+    }
+  }
+  // 执行交换：M 放 N 的位置，N 放 M 的位置
+  srcItems.splice(si, 1)
+  targetItems.splice(ni, 1)
+  targetItems.splice(ni, 0, M)
+  srcItems.splice(si, 0, N)
   endDrag()
 }
 
-/** 丢到某队空白区：替补可跨波放入，队伍内仅同波 */
+/** 丢到某队空白区：同波跨队=移动/满员交换；替补=放入（队内同人→替换）；跨波=目标队有同人则交换。 */
 function dropOnTeam(ev: DropLike, wave: Wave, teamIdx: number) {
   ev.preventDefault()
   const s = dragSrc.value
@@ -641,36 +740,74 @@ function dropOnTeam(ev: DropLike, wave: Wave, teamIdx: number) {
   }
   const team = wave.teams[teamIdx]
   if (s.kind === "bench") {
-    if (hasSameMemberInWave(wave, s.item)) {
-      alert("该成员已有角色在本波，不能重复放入")
-      endDrag()
-      return
-    }
-    if (team.items.length >= TEAM_SIZE) {
-      alert("该队已满 4 人，无法放入")
+    // 当前队伍内已有该成员的另一角色 → 把它放回替补，实现“换号/替换”
+    const dupInTeam = team.items.find((x) => x.memberId === s.item.memberId)
+    if (dupInTeam) {
+      team.items.splice(team.items.indexOf(dupInTeam), 1)
+      mergedBench.value.push(dupInTeam)
+    } else if (hasSameMemberInWave(wave, s.item)) {
+      alert("该成员已有角色在本波（不在当前队伍），不能放入")
       endDrag()
       return
     }
     popMergedBench(s.item)
+    if (team.items.length >= TEAM_SIZE) {
+      const last = team.items.pop()!
+      mergedBench.value.push(last) // 满员：队末一位挤出到替补
+    }
     team.items.push(s.item)
     endDrag()
     return
   }
-  if (!s.wave || s.wave !== wave || s.teamIdx === teamIdx) {
+
+  const srcWave = s.wave
+  if (!srcWave) {
     endDrag()
     return
   }
-  const srcTeam = s.wave.teams[s.teamIdx]
-  if (team.items.length < TEAM_SIZE) {
-    srcTeam.items = srcTeam.items.filter((x) => x !== s.item)
-    team.items.push(s.item)
-  } else {
-    // 目标满员：与最后一位交换
-    const last = team.items[team.items.length - 1]
-    srcTeam.items = srcTeam.items.filter((x) => x !== s.item)
-    team.items = team.items.map((x) => (x === last ? s.item : x))
-    srcTeam.items.push(last)
+  const srcTeam = srcWave.teams[s.teamIdx]
+
+  // 同波：跨队移动（目标满员则与队末交换）
+  if (srcWave === wave) {
+    if (s.teamIdx === teamIdx) {
+      endDrag()
+      return
+    }
+    const srcItems = srcTeam.items
+    if (team.items.length < TEAM_SIZE) {
+      const si = srcItems.indexOf(s.item)
+      if (si >= 0) srcItems.splice(si, 1)
+      team.items.push(s.item)
+    } else {
+      const last = team.items[team.items.length - 1]
+      const si = srcItems.indexOf(s.item)
+      if (si >= 0) srcItems.splice(si, 1)
+      team.items = team.items.map((x) => (x === last ? s.item : x))
+      srcItems.push(last)
+    }
+    endDrag()
+    return
   }
+
+  // 跨波拖到“整个队伍”空白 → 判断目标队内是否有该成员的角色：
+  //   有 → 该角色与拖入角色互换（各回原波）；没有 → 无法交换
+  const M = s.item
+  const dup = team.items.find((x) => x.memberId === M.memberId)
+  if (!dup) {
+    alert("目标队伍中没有该成员的角色，无法交换")
+    endDrag()
+    return
+  }
+  const si = srcTeam.items.indexOf(M)
+  const di = team.items.indexOf(dup)
+  if (si < 0 || di < 0) {
+    endDrag()
+    return
+  }
+  srcTeam.items.splice(si, 1)
+  team.items.splice(di, 1)
+  team.items.splice(di, 0, M)
+  srcTeam.items.splice(si, 0, dup)
   endDrag()
 }
 
@@ -819,7 +956,7 @@ function onUp(ev: { clientX: number; clientY: number }) {
     return
   }
   // 队伍 / 成员：找到所在波与队伍
-  const teamEl = c.role === "team" ? (c.el as HTMLElement) : ((c.el.closest(".team") as HTMLElement) ?? null)
+  const teamEl = c.role === "team" ? (c.el as HTMLElement) : ((c.el.closest(".res-cell") as HTMLElement) ?? null)
   if (!teamEl) {
     endDrag()
     return
@@ -1263,12 +1400,14 @@ function save() {
                     v-for="(it, i) in t.items"
                     :key="it.character.id"
                     class="member-row"
+                    :class="{ 'is-hl-member': hlMember === it.memberId }"
                     data-role="member"
                     :data-wi="wi"
                     :data-ti="idx"
                     :data-i="i"
                     @pointerdown="pdMember($event, wave, idx, it)"
                     @mousedown="pdMember($event, wave, idx, it)"
+                    @click="toggleHlMember(it.memberId)"
                   >
                     <span class="drag-grip">⋮⋮</span>
                     <span class="tag" :class="it.character.roleType === 'dps' ? 'tag--dps' : 'tag--support'">
@@ -1294,26 +1433,54 @@ function save() {
             <span class="zone__count">{{ mergedBench.length }} 人</span>
           </div>
           <div class="bench__chips">
-            <span
-              v-for="it in mergedBench"
-              :key="it.character.id"
-              class="bench__chip"
-              @pointerdown="pdBench($event, it)"
-              @mousedown="pdBench($event, it)"
-            >
-              <span class="drag-grip">⋮⋮</span>
-              <span class="tag" :class="it.character.roleType === 'dps' ? 'tag--dps' : 'tag--support'">
-                {{ roleLabel(it.character.roleType) }}
-              </span>
-              <span v-if="isCarHead(it)" class="tag tag--car">车头</span>
-              {{ it.character.nickname }}
-              <span class="bench__meta"
-                >{{ it.character.job }} · {{ statLabel(it.character.roleType) }} {{ fmtEffScore(it.character.job, it.character.score) }}</span
-              >
-            </span>
+            <template v-for="blk in benchBlocks" :key="blk.memberId + '-' + blk.roleType">
+              <div class="bench-group">
+                <span
+                  v-for="it in blk.items"
+                  :key="it.character.id"
+                  class="bench__chip"
+                  :class="{ 'is-hl-member': hlMember === it.memberId }"
+                  @pointerdown="pdBench($event, it)"
+                  @mousedown="pdBench($event, it)"
+                >
+                  <span class="drag-grip">⋮⋮</span>
+                  <span class="tag" :class="it.character.roleType === 'dps' ? 'tag--dps' : 'tag--support'">
+                    {{ roleLabel(it.character.roleType) }}
+                  </span>
+                  <span v-if="isCarHead(it)" class="tag tag--car">车头</span>
+                  {{ it.character.nickname }}
+                  <span class="bench__meta"
+                    >{{ it.character.job }} · {{ statLabel(it.character.roleType) }} {{ fmtEffScore(it.character.job, it.character.score) }}</span
+                  >
+                </span>
+              </div>
+            </template>
             <span v-if="mergedBench.length === 0" class="bench__empty">
               暂无替补 —— 把任一波的成员拖到这里即可设为替补
             </span>
+          </div>
+        </aside>
+
+        <!-- 参与成员（点击高亮其全部角色） -->
+        <aside class="zone member-zone">
+          <div class="zone__title">
+            参与成员<small>点选后高亮其全部角色</small>
+            <span class="zone__count">{{ partMembers.length }} 人</span>
+          </div>
+          <div class="member-zone__list">
+            <button
+              v-for="m in partMembers"
+              :key="m.id"
+              type="button"
+              class="member-zone__item"
+              :class="{ 'is-on': hlMember === m.id }"
+              @click="toggleHlMember(m.id)"
+            >
+              <span class="member-zone__avatar">{{ (m.name || "?").slice(0, 1) }}</span>
+              <span class="member-zone__name">{{ m.name }}</span>
+              <span class="member-zone__num">{{ m.count }}</span>
+            </button>
+            <span v-if="partMembers.length === 0" class="member-zone__empty">暂无参与成员</span>
           </div>
         </aside>
       </div>
@@ -1767,6 +1934,18 @@ function save() {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: flex-start;
+}
+
+/* 同成员小组块（虚线边框，单角色也框） */
+.bench-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 6px 8px;
+  border: 1px dashed var(--app-text-secondary);
+  border-radius: 12px;
 }
 
 .bench__chip {
@@ -1906,8 +2085,8 @@ function save() {
   }
 
   .bench-zone {
-    flex: 0 0 250px;
-    width: 250px;
+    flex: 0 0 360px;
+    width: 360px;
   }
 }
 
@@ -1938,8 +2117,8 @@ function save() {
 }
 
 .bench-zone--global {
-  flex: 0 0 320px;
-  width: 320px;
+  flex: 0 0 360px;
+  width: 360px;
   min-height: 180px;
   position: sticky;
   top: 8px;
@@ -2193,5 +2372,97 @@ function save() {
   .res-scroll {
     width: 100%;
   }
+}
+
+/* ===== 参与成员面板 ===== */
+.member-zone {
+  flex: 0 0 240px;
+  width: 240px;
+  min-height: 120px;
+  position: sticky;
+  top: 8px;
+  max-height: calc(100vh - 100px);
+  overflow: auto;
+}
+
+@media (max-width: 1200px) {
+  .member-zone {
+    flex: 1 1 100%;
+    width: auto;
+    position: static;
+    max-height: none;
+  }
+}
+
+.member-zone__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.member-zone__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--app-text);
+
+  &:hover {
+    background-color: color-mix(in srgb, var(--app-primary) 10%, transparent);
+  }
+
+  &.is-on {
+    border-color: var(--app-primary);
+    background-color: color-mix(in srgb, var(--app-primary) 16%, transparent);
+  }
+}
+
+.member-zone__avatar {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background-color: var(--app-primary);
+}
+
+.member-zone__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.member-zone__num {
+  font-size: 11px;
+  color: var(--app-text-secondary);
+}
+
+.member-zone__empty {
+  font-size: 12px;
+  color: var(--app-text-secondary);
+}
+
+/* 点选成员后：队伍行 / 替补 chip 背景高亮 */
+.res-cell .member-row.is-hl-member {
+  background-color: color-mix(in srgb, var(--app-primary) 28%, var(--app-bg));
+}
+
+.bench__chip.is-hl-member {
+  background-color: color-mix(in srgb, var(--app-primary) 28%, var(--app-border));
 }
 </style>
