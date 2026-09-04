@@ -612,10 +612,13 @@ interface DropLike {
 
 const dragSrc = ref<DragSource | null>(null)
 const hoverMark = ref("")
+/** 拖拽中每支队伍是否可放入：键 `${wi}:${ti}`，拖拽结束时清空 */
+const dropOk = ref<Record<string, boolean>>({})
 
 function endDrag() {
   dragSrc.value = null
   hoverMark.value = ""
+  dropOk.value = {}
   removeGhost()
 }
 
@@ -627,6 +630,55 @@ function popMergedBench(item: DraftItem) {
 /** 该波是否已有同一成员的其他角色 */
 function hasSameMemberInWave(wave: Wave, item: DraftItem) {
   return wave.teams.some((t) => t.items.some((i) => i.memberId === item.memberId))
+}
+
+/** 拖拽来源 → “整支队伍（空白/整队）”是否可放：直接放 / 同波移动 / 跨波交换。与 dropOnTeam 判定一致 */
+function canDropTeam(s: DragSource, wave: Wave, teamIdx: number): boolean {
+  const team = wave.teams[teamIdx]
+  if (!team) return false
+  if (s.kind === "bench") {
+    if (team.items.some((x) => x.memberId === s.item.memberId)) return true // 换号：队内同人直接替换
+    return !hasSameMemberInWave(wave, s.item) // 该波无此成员 → 直放
+  }
+  const srcWave = s.wave
+  if (!srcWave) return false
+  if (srcWave === wave) return s.teamIdx !== teamIdx // 同波：跨队可移/换，回原队无意义
+  // 跨波：仅当目标队内有该成员角色可与其交换
+  return team.items.some((x) => x.memberId === s.item.memberId)
+}
+
+/** 拖拽来源 → “某个成员槽位”是否可放：排序 / 换号替换 / 交换。与 dropOnMember 判定一致 */
+function canDropMember(s: DragSource, wave: Wave, teamIdx: number, memberIdx: number): boolean {
+  const targetItems = wave.teams[teamIdx]?.items
+  const targ = targetItems?.[memberIdx]
+  if (!targ) return false
+  if (s.kind === "bench") {
+    if (targetItems.some((x) => x.memberId === s.item.memberId)) return true // 换号：替换队内同人
+    return !hasSameMemberInWave(wave, s.item) // 本波别队已有同人 → 该槽不可放
+  }
+  const srcWave = s.wave
+  if (!srcWave) return false
+  if (srcWave === wave) return true // 同波：队内排序 / 跨队交换均可
+  // 跨波交换：同人直接对调；不同人需保证两波都不会出现同人重复
+  const M = s.item
+  const N = targ
+  if (M.memberId === N.memberId) return true
+  const srcHasN = srcWave.teams.some((t) => t.items.some((x) => x.memberId === N.memberId))
+  const tarHasM = wave.teams.some((t) => t.items.some((x) => x.memberId === M.memberId))
+  return !(srcHasN || tarHasM)
+}
+
+/** 拖拽开始时给每支队伍标好整体可放性（绿/红边框由 dnd-can / dnd-no 呈现） */
+function computeDropOk() {
+  const map: Record<string, boolean> = {}
+  const s = dragSrc.value
+  if (!s) return map
+  waves.value.forEach((w, wi) => {
+    w.teams.forEach((_, ti) => {
+      map[`${wi}:${ti}`] = canDropTeam(s, w, ti)
+    })
+  })
+  return map
 }
 
 /** 丢到某队成员上：同波=排序/跨队交换；替补=放入（队内同人→替换）；跨波=与目标角色交换。
@@ -836,7 +888,7 @@ let lastHl: HTMLElement | null = null
 
 function clearHl() {
   if (lastHl) {
-    lastHl.classList.remove("drag-target")
+    lastHl.classList.remove("drag-target", "drag-ok", "drag-no")
     lastHl = null
   }
   lastCandidate = null
@@ -924,15 +976,34 @@ function onMove(ev: { clientX: number; clientY: number; preventDefault(): void }
   ev.preventDefault()
   moveGhost(ev.clientX, ev.clientY)
   const c = dropTargetFrom(document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)
+  const s = dragSrc.value
   if (!c) {
     if (lastCandidate) clearHl()
     return
   }
   if (lastCandidate && lastCandidate.el === c.el) return
   clearHl()
-  c.el.classList.add("drag-target")
-  lastCandidate = c
-  lastHl = c.el
+  if (!s) return
+  if (c.role === "member") {
+    // 成员槽位：按“与该成员交换/替换”的精细规则判定绿/红
+    const el = c.el as HTMLElement
+    const cell = el.closest(".res-cell") as HTMLElement | null
+    const wave = waves.value[Number(cell?.getAttribute("data-wi"))]
+    const ti = Number(cell?.getAttribute("data-ti"))
+    const mi = Number(el.getAttribute("data-i"))
+    const can = !!(wave && !Number.isNaN(ti) && canDropMember(s, wave, ti, mi))
+    el.classList.add(can ? "drag-ok" : "drag-no")
+    lastCandidate = c
+    lastHl = el
+  } else if (c.role === "team") {
+    // 整队可放性已由 dnd-can / dnd-no 全局着色（beginDrag 时算好），无需再叠加
+    lastCandidate = c
+  } else {
+    // 替补区：总是可放
+    c.el.classList.add("drag-ok")
+    lastCandidate = c
+    lastHl = c.el
+  }
 }
 
 function onUp(ev: { clientX: number; clientY: number }) {
@@ -986,6 +1057,7 @@ function beginDrag(ev: EvLike, src: DragSource, captureEl?: HTMLElement | null) 
   if (dragSrc.value) return // 已在进行拖拽（同一次按压 pointerdown+mousedown 只生效一次）
   ev.preventDefault()
   dragSrc.value = src
+  dropOk.value = computeDropOk()
   ghostStartX = ev.clientX
   ghostStartY = ev.clientY
   ghostShown = false
@@ -1371,7 +1443,11 @@ function save() {
                 data-role="team"
                 :data-wi="wi"
                 :data-ti="idx"
-                :class="{ 'is-empty': t.items.length === 0 }"
+                :class="{
+                  'is-empty': t.items.length === 0,
+                  'dnd-can': dropOk[wi + ':' + idx] === true,
+                  'dnd-no': dropOk[wi + ':' + idx] === false,
+                }"
                 :style="{ '--tc': colorOf(wave, t.id) }"
               >
                 <div class="res-cell__head">
@@ -1442,6 +1518,7 @@ function save() {
                   :class="{ 'is-hl-member': hlMember === it.memberId }"
                   @pointerdown="pdBench($event, it)"
                   @mousedown="pdBench($event, it)"
+                  @click="toggleHlMember(it.memberId)"
                 >
                   <span class="drag-grip">⋮⋮</span>
                   <span class="tag" :class="it.character.roleType === 'dps' ? 'tag--dps' : 'tag--support'">
@@ -2149,10 +2226,17 @@ function save() {
   cursor: grab;
 }
 
-.drag-target {
-  outline: 2px dashed var(--app-primary);
+/* 拖拽悬停判定：可放 → 绿框；不可放 → 红框（成员槽位 / 替补区用） */
+.drag-ok {
+  outline: 2px dashed var(--app-success);
   outline-offset: -2px;
-  background-color: color-mix(in srgb, var(--app-primary) 10%, transparent);
+  background-color: color-mix(in srgb, var(--app-success) 12%, transparent);
+}
+
+.drag-no {
+  outline: 2px dashed var(--app-danger);
+  outline-offset: -2px;
+  background-color: color-mix(in srgb, var(--app-danger) 12%, transparent);
 }
 
 /* 跟手的“被拖角色”卡片 */
@@ -2283,6 +2367,19 @@ function save() {
   &.is-empty {
     background-color: transparent;
     border-style: dashed;
+  }
+
+  /* 拖拽中整队可放性：绿框=可放入/交换；红框=不可 */
+  &.dnd-can {
+    outline: 2px dashed var(--app-success);
+    outline-offset: -2px;
+    background-color: color-mix(in srgb, var(--app-success) 6%, transparent);
+  }
+
+  &.dnd-no {
+    outline: 2px dashed var(--app-danger);
+    outline-offset: -2px;
+    background-color: color-mix(in srgb, var(--app-danger) 6%, transparent);
   }
 }
 
