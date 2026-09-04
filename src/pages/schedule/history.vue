@@ -90,9 +90,7 @@ function isDetailOpen(g: HistGroup) {
 }
 
 function toggleDetail(g: HistGroup) {
-  detailIds.value = isDetailOpen(g)
-    ? detailIds.value.filter((k) => k !== g.key)
-    : [...detailIds.value, g.key]
+  detailIds.value = isDetailOpen(g) ? detailIds.value.filter((k) => k !== g.key) : [...detailIds.value, g.key]
 }
 
 /* ---------------- 组内总览 ---------------- */
@@ -130,11 +128,12 @@ function ovColName(c: OvColumn): string {
   return OV_COLOR_NAMES[c.rank % OV_COLOR_NAMES.length]
 }
 
-/** 总览 Grid 的列模板：首列场次 + 每队一列（等宽） */
+/** 总览 Grid 的列模板：首列场次 +（点击高亮时新增“高亮角色”列）+ 每队一列（等宽） */
 function ovGridCols(g: HistGroup): string {
+  const hl = ovHl.value && ovHl.value.g === g.key ? "128px " : ""
   const n = ovColumns(g).length
   const team = n ? Array.from({ length: n }, () => "minmax(0, 1fr)").join(" ") : "1fr"
-  return `minmax(88px, auto) ${team}`
+  return `minmax(88px, auto) ${hl}${team}`
 }
 
 /** 取某“场”中对应列（按基准队伍）的角色列表 */
@@ -159,8 +158,25 @@ function ovIsHl(g: HistGroup, mb: ScheduledSlot): boolean {
 /** 点击切换：高亮该成员在此次排班中的全部角色；再点取消 */
 function ovToggleHl(g: HistGroup, mb: ScheduledSlot) {
   const key = ovMemberKey(mb)
-  ovHl.value =
-    ovHl.value && ovHl.value.g === g.key && ovHl.value.key === key ? null : { g: g.key, key }
+  ovHl.value = ovHl.value && ovHl.value.g === g.key && ovHl.value.key === key ? null : { g: g.key, key }
+}
+
+/** 当前组是否处于“点击高亮某成员”状态（决定是否显示新增的“高亮角色”列） */
+function ovHlGroupKey(g: HistGroup): boolean {
+  return !!ovHl.value && ovHl.value.g === g.key
+}
+
+/** 某“场”中属于被高亮成员的全部角色（供新增列逐波展示） */
+function ovHlOf(s: Schedule): ScheduledSlot[] {
+  const key = ovHl.value?.key
+  if (!key) return []
+  const out: ScheduledSlot[] = []
+  s.teams.forEach((t) =>
+    t.members.forEach((mb) => {
+      if (ovMemberKey(mb) === key) out.push(mb)
+    }),
+  )
+  return out
 }
 </script>
 
@@ -213,26 +229,36 @@ function ovToggleHl(g: HistGroup, mb: ScheduledSlot) {
           <div class="ov-scroll">
             <div class="ov-grid" :style="{ gridTemplateColumns: ovGridCols(g) }">
               <div class="ov-hd ov-hd--label">场次</div>
-              <div
-                v-for="c in ovColumns(g)"
-                :key="c.key"
-                class="ov-hd"
-                :title="`${c.name} · 伤害门槛`"
-              >
+              <div v-if="ovHlGroupKey(g)" class="ov-hd ov-hd--hl" title="点击该成员某角色可取消高亮">
+                高亮角色
+              </div>
+              <div v-for="c in ovColumns(g)" :key="c.key" class="ov-hd" :title="`${c.name} · 伤害门槛`">
                 <i class="ov-dot" :style="{ backgroundColor: c.color }"></i>{{ ovColName(c) }}
               </div>
               <template v-for="s in g.items" :key="s.id">
                 <div class="ov-label">{{ s.roundLabel || "本次排班" }}</div>
+                <div v-if="ovHlGroupKey(g)" class="ov-cell ov-cell--hl">
+                  <template v-if="ovHlOf(s).length">
+                    <span
+                      v-for="mb in ovHlOf(s)"
+                      :key="mb.characterId"
+                      class="ov-chip is-hl"
+                      :class="mb.roleType === 'dps' ? 'is-dps' : 'is-sup'"
+                      :title="`${mb.memberName} · ${mb.job} · ${mb.roleType === 'dps' ? '伤害(千亿) ' : '奶量 '}${mb.score}（点击取消高亮）`"
+                      @click="ovToggleHl(g, mb)"
+                    >
+                      {{ mb.nickname }}
+                    </span>
+                  </template>
+                  <span v-else class="ov-empty">—</span>
+                </div>
                 <div v-for="c in ovColumns(g)" :key="c.key" class="ov-cell">
                   <template v-if="ovMembers(s, c).length">
                     <span
                       v-for="mb in ovMembers(s, c)"
                       :key="mb.characterId"
                       class="ov-chip"
-                      :class="[
-                        mb.roleType === 'dps' ? 'is-dps' : 'is-sup',
-                        { 'is-hl': ovIsHl(g, mb) },
-                      ]"
+                      :class="[mb.roleType === 'dps' ? 'is-dps' : 'is-sup', { 'is-hl': ovIsHl(g, mb) }]"
                       :title="`${mb.memberName} · ${mb.job} · ${mb.roleType === 'dps' ? '伤害(千亿) ' : '奶量 '}${mb.score}${ovIsHl(g, mb) ? '（点击取消高亮）' : '（点击高亮该成员全部角色）'}`"
                       @click="ovToggleHl(g, mb)"
                     >
@@ -436,7 +462,9 @@ function ovToggleHl(g: HistGroup, mb: ScheduledSlot) {
   white-space: nowrap;
   justify-content: center;
   cursor: pointer;
-  transition: box-shadow 0.12s ease, filter 0.12s ease;
+  transition:
+    box-shadow 0.12s ease,
+    filter 0.12s ease;
 
   &:hover {
     filter: brightness(1.12);
@@ -452,9 +480,7 @@ function ovToggleHl(g: HistGroup, mb: ScheduledSlot) {
 
   /* 点击高亮：该成员的全部角色 */
   &.is-hl {
-    outline: 2px solid #ff3b9d;
-    outline-offset: 1px;
-    box-shadow: 0 0 0 4px color-mix(in srgb, #ff3b9d 45%, transparent);
+    background-color: red;
   }
 }
 

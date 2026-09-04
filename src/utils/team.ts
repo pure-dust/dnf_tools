@@ -51,14 +51,14 @@ export function emptyDraftsFromTemplate(
 
 /**
  * 就近补齐式分配（在 emptyDraftsFromTemplate 之后调用）：
- * - 目标：**优先补满完整的 4 人队**，而不是把人摊满每支队伍；
  * - 队伍按“伤害门槛降序”处理（红队门槛最高优先拿人，颜色红→蓝）；
- * - 每队填人顺序：
- *   ① 保证最少辅助数（minSup，默认 1，**辅助以 minSup 为上限，不超编**）；
- *   ② 保证最少输出数（minDps，默认 0）；
- *   ③ 剩余空位**仅以输出补满**到 4 人；输出不足则宁缺（不额外补辅助）；
- * - **宁缺不开碎队**：第一队（红）允许不满员；从第二队起，若剩余池不足一整队
- *   （< TEAM_SIZE）则不再开新队，其余一律进替补——避免“黄/绿单挂 1 人碎队”；
+ * - **分两个阶段取人**：
+ *   ① **辅助先行**：红队 → 黄队 → …，先把各队需要的辅助（minSup，以 minSup 为上限不超编）补齐；
+ *      直到“辅助无法再进行排班”（辅助池耗尽 / 各启用队配额已满足）即停止；
+ *   ② **再排输出**（规则同辅助）：同样红队 → 黄队 → …，先满足各队最少输出（minDps），
+ *      再把每队补到 4 人（仅以输出补，宁缺不额外补辅助）；
+ * - **宁缺不开碎队**：第一队（红）允许不满员；从第二队起剩余池不足一整队（< TEAM_SIZE）
+ *   则不再开该队及后续队伍，其余一律进替补——避免“黄/绿单挂 1 人碎队”；
  * - 取人时满足门槛者优先（取最高）；无人满足则就近补位（低于门槛但最高）；
  * - **只按定位选人**：队内不区分细分职业(job)，仅按 输出/辅助 定位 + 门槛/分数 取人；
  * - 超过所有队伍容量的人进入替补（bench）。
@@ -94,40 +94,52 @@ export function assignByLimits(
     return list.splice(idx, 1)[0]
   }
 
-  for (let ti = 0; ti < out.length; ti++) {
-    const team = out[ti]
-    // 宁缺不开碎队：第二队起剩余不足一整队即停（其余人进替补）
-    if (ti > 0 && sup.length + dps.length < TEAM_SIZE) break
+  // 宁缺：先按“每队满编 4 人”沿顺序预估“会启用”的队伍数（红队允许不满员；之后不足一整队即停）
+  let openN = 0
+  let rem = sup.length + dps.length
+  for (let i = 0; i < out.length; i++) {
+    if (i > 0 && rem < TEAM_SIZE) break
+    openN++
+    rem -= TEAM_SIZE
+  }
+  const active = out.slice(0, Math.max(openN, 1))
+  if (active.length > out.length) active.length = out.length
+
+  // 阶段① 辅助先行：红队 → 黄队 → …，各队保 minSup（不超编），直到辅助无法再排
+  for (const team of active) {
     const minSup = team.minSup ?? 1
-    const minDps = team.minDps ?? 0
-    // ① 保证最少辅助数
-    while (
-      team.items.length < TEAM_SIZE &&
-      roleCount(team.items, "support") < minSup &&
-      sup.length
-    ) {
+    while (team.items.length < TEAM_SIZE && roleCount(team.items, "support") < minSup && sup.length) {
       const it = take(sup, team.healLimit)
       if (!it) break
       team.items.push(it)
     }
-    // ② 保证最少输出数
-    while (
-      team.items.length < TEAM_SIZE &&
-      roleCount(team.items, "dps") < minDps &&
-      dps.length
-    ) {
+  }
+  // 阶段② 输出保底：红队 → 黄队 → …，先满足各队 minDps
+  for (const team of active) {
+    const minDps = team.minDps ?? 0
+    while (team.items.length < TEAM_SIZE && roleCount(team.items, "dps") < minDps && dps.length) {
       const it = take(dps, team.damageLimit)
       if (!it) break
       team.items.push(it)
     }
-    // ③ 剩余空位仅以输出补满（辅助不超过 minSup，宁缺不超编）
+  }
+  // 阶段③ 输出补满到 4 人（仅输出，宁缺不补辅助）
+  for (const team of active) {
     while (team.items.length < TEAM_SIZE && dps.length) {
       const it = take(dps, team.damageLimit)
       if (!it) break
       team.items.push(it)
     }
-    // 已无人可用则此后的队伍保持空
-    if (!sup.length && !dps.length) break
+  }
+  // 宁缺兜底：非首队若最终仍凑不满一整队（输出不足导致只拿到辅助/少数输出），整队退回替补，避免碎队
+  for (let i = 1; i < active.length; i++) {
+    const team = active[i]
+    if (team.items.length && team.items.length < TEAM_SIZE) {
+      while (team.items.length) {
+        const it = team.items.pop()!
+        ;(it.character.roleType === "support" ? sup : dps).push(it)
+      }
+    }
   }
 
   return { teams: out, bench: [...sup, ...dps] }
@@ -166,100 +178,81 @@ export function teamCounts(items: DraftItem[]) {
 }
 
 /**
- * 拆班：按“每班=每成员各出 1 个号”逐班铺排（同人每班至多 1 号），**满员优先**。
- * - 每班容量 = min(perWave, 可排成员数)：同人不可同班 → 每班人数上限被“成员数”锁死；
- * - 逐班（wave）填充：每班把“仍有号可出”的成员（按剩余号数降序取前 cap 名）各取 1 个号，
- *   因此前面的班总是最满、越靠后越稀疏（满员优先 + 班数下界=单成员最大号数的物理约束）；
- * - **每班至多 1 个辅助**：每班从“仍有未用辅助”的成员中，轮转选出“距上次出奶最久”者作
- *   奶提供者（其辅助按分数降序取队首），其余成员该班给出分数最高的输出；
- *   奶用尽后（或成员无奶可出时）剩余班次全部为输出（宁缺不加第二奶）；
- * - 成员在自己有号的每个班都出 1 个号 → 同人各号落在**连续相邻班次**（天然软连排），
- *   且各号不会落回其已出过的班（同人不同班保证）。
- * 保证：每班人数 ≤ perWave，且每班内每个成员至多一个角色。
+ * 拆班：**先按模板容量定“计划班数”，再按班填充（每班配足该班可组队伍所需的辅助）**。
+ * - 计划班数 = ⌈总角色 / perWave⌉（纯按“模板参与人数上限”，不因成员数/奶等规则而增加）；
+ * - 每班容量 seat = min(perWave, 参与成员数)，且同人每班至多 1 号；
+ * - **辅助先行（按班）**：每班先放“该班能组满编队所需的辅助数” = max(1, ⌊seat/4⌋)
+ *   （即 12 人班放 3 奶、8 人班放 2 奶、不足 4 人班放 1 奶），各奶来自不同成员；
+ *   这样后续组队阶段可“先红队辅助 → 黄队辅助 → …”，每支可开队伍都有辅助；
+ * - 辅助不足时后面的班才会缺奶（宁缺）；随后用输出把班补满，成员不足则少填；
+ * - 计划班数用完后剩余角色进入替补 bench；班数本身不随规则膨胀。
  */
-export function splitRounds(items: DraftItem[], perWave: number): DraftItem[][] {
-  if (!items.length || perWave <= 0) return [];
-  if (items.length === 1) return [items];
+export function splitRounds(
+  items: DraftItem[],
+  perWave: number,
+): { waves: DraftItem[][]; bench: DraftItem[] } {
+  if (!items.length || perWave <= 0) return { waves: [], bench: [] }
+  if (items.length === 1) return { waves: [items], bench: [] }
 
-  const isSup = (i: DraftItem) => i.character.roleType === "support";
-  const memberCount = new Set(items.map((i) => i.memberId)).size;
-  const cap = Math.max(1, Math.min(perWave, memberCount));
+  const isSup = (i: DraftItem) => i.character.roleType === "support"
+  const memberCount = new Set(items.map((i) => i.memberId)).size
+  // 计划班数：纯按模板容量（不考虑成员/奶等规则）
+  const targetW = Math.max(1, Math.ceil(items.length / perWave))
+  // 每班最多可坐人数：同人每班 1 号 → 受“参与成员数”限制
+  const seat = Math.max(1, Math.min(perWave, memberCount))
+  // 每班先配的辅助数 = 该班最多能组成的满编(4人)队数（保底 1）
+  const supPerWave = Math.max(1, Math.floor(seat / TEAM_SIZE))
 
-  // 按成员归堆：每人辅助/输出分开排队（各自按分数降序）
-  interface Pile {
-    memberId: string
-    order: number // 稳定的原始次序，用于并列时的确定性
-    sups: DraftItem[]
-    dps: DraftItem[]
+  const remSup = items.filter(isSup)
+  const remDps = items.filter((i) => !isSup(i))
+
+  /** 从列表中取第一个“成员尚未在本班出现”的角色（保持原顺序，确保每班各成员至多 1 号） */
+  const takeDistinct = (arr: DraftItem[], members: Set<string>): DraftItem | null => {
+    const i = arr.findIndex((p) => !members.has(p.memberId))
+    if (i < 0) return null
+    return arr.splice(i, 1)[0]
   }
-  const byMember = new Map<string, Pile>()
-  items.forEach((it, i) => {
-    let p = byMember.get(it.memberId)
-    if (!p) {
-      p = { memberId: it.memberId, order: i, sups: [], dps: [] }
-      byMember.set(it.memberId, p)
-    }
-    ;(isSup(it) ? p.sups : p.dps).push(it)
-  })
-  const order = [...byMember.values()].sort(
-    (a, b) => b.sups.length + b.dps.length - (a.sups.length + a.dps.length) || a.order - b.order,
-  )
-  const remaining = (p: Pile) => p.sups.length + p.dps.length
-  order.forEach((p) => {
-    p.sups.sort((a, b) => b.character.score - a.character.score)
-    p.dps.sort((a, b) => b.character.score - a.character.score)
-  })
 
   const waves: DraftItem[][] = []
-  /** 每名成员上次出奶的班次（用于“距上次出奶最久者”轮转） */
-  const lastSupAt = new Map<string, number>()
-
-  while (order.some((p) => remaining(p) > 0)) {
-    const w = waves.length
-    // 本班在役成员：仍有号者，按剩余号数降序取前 cap 名（满员优先）
-    const active = order
-      .filter((p) => remaining(p) > 0)
-      .sort(
-        (a, b) => remaining(b) - remaining(a) || b.sups.length + b.dps.length - (a.sups.length + a.dps.length) || a.order - b.order,
-      )
-      .slice(0, cap)
-
-    // 选奶提供者：有未用辅助的成员中“距上次出奶最久”者（保证奶在各班轮转、尽量靠前班带奶）
-    let provider: Pile | null = null
-    let bestGap = -1
-    for (const p of active) {
-      if (!p.sups.length) continue
-      const gap = w - (lastSupAt.get(p.memberId) ?? -1)
-      if (gap > bestGap) {
-        bestGap = gap
-        provider = p
-      }
-    }
-
+  for (let w = 0; w < targetW; w++) {
     const wave: DraftItem[] = []
-    const used = new Set<string>()
-    if (provider) {
-      wave.push(provider.sups.shift()!)
-      used.add(provider.memberId)
-      lastSupAt.set(provider.memberId, w)
+    const members = new Set<string>()
+    // ① 辅助先行：每班先放 supPerWave 个辅助（来自不同成员）
+    while (wave.length < seat && wave.length < supPerWave) {
+      const s = takeDistinct(remSup, members)
+      if (!s) break
+      wave.push(s)
+      members.add(s.memberId)
     }
-    for (const p of active) {
-      if (used.has(p.memberId)) continue
-      if (p.dps.length) {
-        wave.push(p.dps.shift()!)
-        used.add(p.memberId)
-      }
-      // 无输出可出（只剩辅助）且非本次奶提供者 → 本班缺席，奶留待其轮到提供时再出
+    // ② 用输出把班补满（每班各成员至多 1 号）
+    while (wave.length < seat) {
+      const d = takeDistinct(remDps, members)
+      if (!d) break
+      wave.push(d)
+      members.add(d.memberId)
     }
-    if (!wave.length) break // 防御：不该出现
+    // ③ 输出不足以满员时，可用多余辅助补位（减少无谓替补）
+    while (wave.length < seat) {
+      const s = takeDistinct(remSup, members)
+      if (!s) break
+      wave.push(s)
+      members.add(s.memberId)
+    }
+    if (!wave.length) break
     waves.push(wave)
   }
-  return waves
+  // 计划班数用尽后仍未放下的角色 → 替补区
+  const bench = [...remSup, ...remDps]
+  return { waves, bench }
 }
 
-/** 与 splitRounds 完全同规则，只返回需要的班次数（用于界面预估） */
+/**
+ * 需要的班次数（与 splitRounds 的计划一致）：只按“模板每班人数上限”算 ⌈总角色 / perWave⌉，
+ * 不因成员数/奶等规则膨胀；放不进这些班的角色会进入替补区。
+ */
 export function estimateWaveCount(items: DraftItem[], perWave: number): number {
-  return splitRounds(items, perWave).length;
+  if (!items.length || perWave <= 0) return 0
+  return Math.max(1, Math.ceil(items.length / perWave))
 }
 
 /** 提示某队伍组成是否“合规” 1辅助+3输出 */

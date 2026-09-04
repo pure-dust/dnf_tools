@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue"
 import { useRoute, useRouter } from "vue-router"
-import type { Character, Member, Template } from "../../types/schedule"
+import type { Character, Member, Schedule, ScheduledSlot, Template } from "../../types/schedule"
 import { roleLabel, statLabel, uid } from "../../types/schedule"
 import { ensureLoaded, replaceSchedules, saveSchedule, useScheduleStore } from "../../composables/useScheduleStore"
 import type { DraftItem, TeamDraft } from "../../utils/team"
@@ -120,23 +120,85 @@ async function loadForEdit(groupKey: string) {
     memberByNick.set(m.nickname, list2)
   })
   const live = new Set<string>()
-  list.forEach((s) =>
-    (s.teams ?? []).forEach((team) =>
-      (team.members ?? []).forEach((slot) => {
-        const direct = memberById.get(slot.memberId)?.characters.find((c) => c.id === slot.characterId)
-        if (direct) {
-          live.add(direct.id)
-          return
-        }
-        const fallback = (memberByNick.get(slot.memberName ?? "") ?? [])
-          .map((m) => m.characters.find((c) => c.nickname === slot.nickname))
-          .find(Boolean)
-        if (fallback) live.add(fallback.id)
-      }),
-    ),
-  )
+  const tryAdd = (slot: ScheduledSlot) => {
+    const direct = memberById.get(slot.memberId)?.characters.find((c) => c.id === slot.characterId)
+    if (direct) {
+      live.add(direct.id)
+      return
+    }
+    const fallback = (memberByNick.get(slot.memberName ?? "") ?? [])
+      .map((m) => m.characters.find((c) => c.nickname === slot.nickname))
+      .find(Boolean)
+    if (fallback) live.add(fallback.id)
+  }
+  list.forEach((s) => {
+    ;(s.teams ?? []).forEach((team) => (team.members ?? []).forEach(tryAdd))
+    ;(s.bench ?? []).forEach(tryAdd)
+  })
+  // 恢复替补区：替补快照记录在组内第一场（旧数据没有则替补为空）
+  const benchSource = list.find((s) => (s.bench ?? []).length) ?? list[0]
+  mergedBench.value = (benchSource?.bench ?? []).map((slot) => ({
+    memberId: slot.memberId,
+    character: {
+      id: slot.characterId,
+      nickname: slot.nickname,
+      roleType: slot.roleType,
+      job: slot.job,
+      fame: slot.fame,
+      score: slot.score,
+    } as Character,
+  }))
+
+  // 保存后成员新增的角色：编辑时自动放入替补区并纳入勾选（便于参与后续重新生成/手动安排）
+  const savedCharIds = new Set<string>()
+  const appearMemberIds = new Set<string>()
+  const appearMemberNames = new Set<string>()
+  const savedNicks = new Map<string, Set<string>>()
+  const noteNick = (k: string, nick: string) => {
+    if (!k) return
+    let s = savedNicks.get(k)
+    if (!s) {
+      s = new Set()
+      savedNicks.set(k, s)
+    }
+    s.add(nick)
+  }
+  list.forEach((s) => {
+    const slots = [...(s.teams ?? []).flatMap((t) => t.members ?? []), ...(s.bench ?? [])]
+    slots.forEach((sl) => {
+      savedCharIds.add(sl.characterId)
+      if (sl.memberId) appearMemberIds.add(sl.memberId)
+      if (sl.memberName) appearMemberNames.add(sl.memberName)
+      noteNick(sl.memberId, sl.nickname)
+      noteNick(sl.memberName, sl.nickname)
+    })
+  })
+  for (const m of store.data.members) {
+    if (!m.schedulable) continue
+    // 只处理“本次排班用到的成员”（保存快照里出现过）
+    if (!appearMemberIds.has(m.id) && !appearMemberNames.has(m.nickname)) continue
+    const have = new Set<string>()
+    savedNicks.get(m.id)?.forEach((n) => have.add(n))
+    savedNicks.get(m.nickname)?.forEach((n) => have.add(n))
+    for (const c of m.characters) {
+      if (savedCharIds.has(c.id)) continue // 已排/已在替补中的角色
+      if (have.has(c.nickname)) continue // 同昵称视为已有
+      // 新角色 → 替补区 + 勾选
+      tryAdd({
+        memberId: m.id,
+        characterId: c.id,
+        memberName: m.nickname,
+        nickname: c.nickname,
+        roleType: c.roleType,
+        job: c.job,
+        fame: c.fame,
+        score: c.score,
+      })
+      mergedBench.value.push({ memberId: m.id, character: c })
+    }
+  }
   selectedIds.value = [...live]
-  mergedBench.value = []
+
   hasGenerated.value = true
   editingGroupKey.value = groupKey
 }
@@ -160,11 +222,24 @@ const supportSelected = computed(
     pool.value.filter((p) => p.character.roleType === "support" && selectedIds.value.includes(p.character.id)).length,
 )
 
-/** 需要的波次数（含“同成员不同角色不可同波”约束后的精确预估） */
+/**
+ * 需要的波次数 = ⌈总角色 / 模板每班人数上限⌉：先按模板容量定班数（不因成员/奶等规则增加），
+ * 放不进这些班的角色会进入替补区。与 splitRounds 的计划一致，生成后不跳变。
+ */
 const roundCount = computed(() => {
   const cap = Math.min(Math.max(templateMax.value || 1, 1), 20)
   if (!selectedCount.value || !cap) return 0
   return estimateWaveCount(selectedItems(), cap)
+})
+
+/** 参与成员数（勾选角色去重后的成员人数） */
+const selMemberCount = computed(() => new Set(selectedItems().map((i) => i.memberId)).size)
+
+/** 每波实际可容纳人数 = min(模板每班上限, 参与成员数)：同人每班 1 号 → 成员不足时装不满模板容量 */
+const waveCap = computed(() => {
+  const cap = Math.min(Math.max(templateMax.value || 1, 1), 20)
+  const m = Math.max(selMemberCount.value, 1)
+  return Math.max(1, Math.min(cap, m))
 })
 
 function toggleSelect(id: string) {
@@ -229,7 +304,7 @@ function selectedItems(): DraftItem[] {
   return pool.value.filter((p) => selectedIds.value.includes(p.character.id))
 }
 
-/** 生成：人够多时拆成多个波次，各波的替补统一并入右侧“替补区域” */
+/** 生成：先按模板每班容量定下“计划班数”，再按规则填充；放不进这些班的角色进入替补区 */
 function generate() {
   if (!template.value) {
     alert("请先在“排班模板”页创建并选择一个模板")
@@ -238,9 +313,9 @@ function generate() {
   const items = selectedItems()
   if (!items.length) return
   const cap = Math.min(Math.max(templateMax.value || 1, 1), 20)
-  const rounds = splitRounds(items, cap)
+  const { waves: rounds, bench: overflow } = splitRounds(items, cap)
   const ws: Wave[] = []
-  const benchAll: DraftItem[] = []
+  const benchAll: DraftItem[] = [...overflow]
   rounds.forEach((poolItems, i) => {
     const base = emptyDraftsFromTemplate(template.value!.teams)
     const res = assignByLimits(base, poolItems)
@@ -254,12 +329,59 @@ function generate() {
   waves.value = ws
   mergedBench.value = benchAll
   hasGenerated.value = true
+  // 生成后内置“多次插入”：按生成逻辑（启用空队、先辅后出、每队≤4、同人每班1号）反复补，直到无法再插入
+  insertBenchToTeams()
+}
+
+/* ---------------- 替补插入（生成内置 + 自动补位） ---------------- */
+/** 把一个替补角色按生成逻辑放入指定班内的某队（先补辅助缺口，再补输出到 ≤4；同班不重复成员） */
+function fillTeamFromBench(wave: Wave, team: TeamDraft) {
+  const used = mergedBench.value
+  const isSup = (i: DraftItem) => i.character.roleType === "support"
+  const supCount = (items: DraftItem[]) => items.filter(isSup).length
+  const inWave = (item: DraftItem) =>
+    wave.teams.some((t) => t.items.some((x) => x.memberId === item.memberId))
+  if (team.items.length >= TEAM_SIZE) return
+  const minSup = team.minSup ?? 1
+  // ① 补辅助缺口（不超编：最多补到 minSup）
+  while (team.items.length < TEAM_SIZE && supCount(team.items) < minSup) {
+    const idx = used.findIndex((i) => isSup(i) && !inWave(i))
+    if (idx < 0) break
+    const it = used.splice(idx, 1)[0]
+    team.items.push(it)
+  }
+  // ② 补输出直到满 4 人（输出不足则停在不满员）
+  while (team.items.length < TEAM_SIZE) {
+    const idx = used.findIndex((i) => !isSup(i) && !inWave(i))
+    if (idx < 0) break
+    const it = used.splice(idx, 1)[0]
+    team.items.push(it)
+  }
 }
 
 /**
- * 自动补位：把替补区角色插回队伍。仅受“同一成员不可在同一班重复”约束——
- * 不看门槛/定位，逐班（靠前优先）找“该成员尚未在本班出现”且存在“有空位队伍”的班插入。
+ * 生成内置：把替补按生成逻辑尽量插入各队（启用空队），反复进行直到无法再插入。
+ * 逐班(靠前)→逐队(红→黄→绿)→先补辅助再补输出；每队≤4、同班同人至多 1 号；
  * 放不下的替补保留在替补区。
+ */
+function insertBenchToTeams() {
+  let changed = true
+  let guard = 0
+  while (changed && guard++ < 100) {
+    changed = false
+    for (const wave of waves.value) {
+      for (const team of wave.teams) {
+        const before = team.items.length
+        fillTeamFromBench(wave, team)
+        if (team.items.length > before) changed = true
+      }
+    }
+  }
+}
+
+/**
+ * 自动补位（简单版）：把替补区角色直接插回“有空位队伍且同班不含该成员”的队，
+ * 不看门槛/顺序；放不下的保留替补。用于生成后手动调整时快速回填空位。
  */
 function autoFillBench() {
   if (!mergedBench.value.length) return
@@ -278,6 +400,41 @@ function autoFillBench() {
     if (!placed) rest.push(item)
   }
   mergedBench.value = rest
+}
+
+/* ---------------- 结果区总览式网格（行=波次，列=队伍） ---------------- */
+/** 第一波（基准波）的队伍 → 作为列头/列配置源 */
+function baseTeams(): TeamDraft[] {
+  return waves.value[0]?.teams ?? []
+}
+
+/** 网格列模板：波次列 + 每队一列（可横向滚动） */
+function resGridCols(): string {
+  const n = baseTeams().length
+  const team = n ? Array.from({ length: n }, () => "minmax(210px, 1fr)").join(" ") : "1fr"
+  return `minmax(150px, auto) ${team}`
+}
+
+/** 列头队伍圆点颜色（按基准波门槛排序，与结果格同色） */
+function baseTeamColor(idx: number): string {
+  const w = waves.value[0]
+  const t = w?.teams[idx]
+  return t ? colorOf(w, t.id) : ""
+}
+
+/** 列头门槛/配额改动 → 同步到全部波次的同一列队伍 */
+function onColumnLimit(
+  idx: number,
+  field: "damageLimit" | "healLimit" | "minDps" | "minSup",
+  ev: Event,
+) {
+  const raw = (ev.target as HTMLInputElement).value
+  const val = raw === "" ? 0 : Number(raw)
+  const v = Number.isFinite(val) && val >= 0 ? val : 0
+  waves.value.forEach((w) => {
+    const t = w.teams[idx]
+    if (t) t[field] = v
+  })
 }
 
 /** 按某波门槛重新分配（该波此前手动放入替补的人会重新参与分配并从替补移除） */
@@ -669,6 +826,21 @@ function save() {
         memberName: memberMap.get(slot.memberId)?.nickname ?? slot.memberName,
       })),
     }))
+  // 替补区快照（保存到组内第一场，供下次编辑恢复）
+  const benchOf = () =>
+    mergedBench.value.map((it) => {
+      const ch = it.character
+      return {
+        memberId: it.memberId,
+        characterId: ch.id,
+        memberName: memberMap.get(it.memberId)?.nickname ?? "",
+        nickname: ch.nickname,
+        roleType: ch.roleType,
+        job: ch.job,
+        fame: ch.fame,
+        score: ch.score,
+      }
+    })
 
   // 编辑覆盖：复用原组旧记录的 id / createdAt / groupId，位置与分组保持不变
   if (editingGroupKey.value) {
@@ -678,7 +850,7 @@ function save() {
     const oldGroupId = olds[0]?.groupId
     // 原为多场组沿用其 groupId；原单场仍为单场；若由单场扩成多场则新建组
     const coverGroupId = oldGroupId ?? (waves.value.length > 1 ? uid() : undefined)
-    const payloads = waves.value.map((wave, i) => {
+    const payloads: Schedule[] = waves.value.map((wave, i) => {
       const old = olds[i]
       return {
         id: old?.id ?? uid(),
@@ -693,6 +865,9 @@ function save() {
         teams: teamOf(wave),
       }
     })
+    // 替补记录到组内第一场
+    const benchSlots = benchOf()
+    if (benchSlots.length && payloads.length) payloads[0] = { ...payloads[0], bench: benchSlots }
     // 删除该组全部旧记录后整体写回（旧记录多于新场次时自动清除多余）
     replaceSchedules(
       olds.map((o) => o.id),
@@ -704,9 +879,10 @@ function save() {
 
   // 新建：多波次共享 groupId
   const groupId = waves.value.length > 1 ? uid() : undefined
+  const benchSlots = benchOf()
   for (let i = 0; i < waves.value.length; i++) {
     const wave = waves.value[i]
-    saveSchedule({
+    const rec: Schedule = {
       id: uid(),
       time: time.value,
       createdAt: created,
@@ -717,7 +893,10 @@ function save() {
       roundLabel: waves.value.length > 1 ? wave.label : undefined,
       roundIndex: i + 1,
       teams: teamOf(wave),
-    })
+    }
+    // 替补记录到组内第一场
+    if (i === 0 && benchSlots.length) rec.bench = benchSlots
+    saveSchedule(rec)
   }
   router.push("/schedule/history")
 }
@@ -782,7 +961,8 @@ function save() {
           <span class="create__pick-count">
             已选 <b>{{ selectedCount }}</b>
             <template v-if="template && roundCount > 0">
-              · 将分 <b>{{ roundCount }}</b> 波（每波 ≤ {{ templateMax }} 人）
+              · 将分 <b>{{ roundCount }}</b> 波（每波 ≤ {{ waveCap }} 人
+              <template v-if="waveCap < templateMax">，受成员人数 {{ selMemberCount }} 限制</template>）
             </template>
             · 输出 {{ dpsSelected }} · 辅助 {{ supportSelected }}
           </span>
@@ -861,109 +1041,130 @@ function save() {
       </div>
 
       <div class="results__layout">
-        <!-- 左：各波次队伍 -->
-        <div class="results__waves">
-          <div v-for="(wave, wi) in waves" :key="wi" class="wave">
-            <div class="wave__head">
-              <b class="wave__label">{{ wave.label }}</b>
-              <span class="wave__meta"> 参与 {{ wave.pool.length }} 人 · 已排 {{ wavePlaced(wave) }} 人 </span>
-              <button class="btn btn--sm" type="button" :disabled="wave.teams.length === 0" @click="reassignWave(wave)">
-                按本波各队门槛重新分配
-              </button>
-            </div>
-            <p class="create__hint">拖拽成员可调整：队内/跨队交换，或拖到右侧“替补区域”移出本波。</p>
-
-            <div class="zone zone--teams">
-              <div class="zone__title">队伍区域<small>每队 4 人，满员时拖到其成员身上可交换</small></div>
-              <div class="teams">
-                <div
-                  v-for="(t, idx) in wave.teams"
-                  :key="t.id"
-                  class="team panel"
-                  data-role="team"
-                  :data-wi="wi"
-                  :data-ti="idx"
-                  :style="{ '--tc': colorOf(wave, t.id) }"
-                >
-                  <div class="team__accent"></div>
-                  <div class="team__head">
-                    <i class="team__dot"></i>
-                    <b class="team__name">{{ t.name }}</b>
-                    <span v-if="t.items.length" class="team__count">
-                      输出 {{ teamPeople(wave, idx).dps }} · 辅助 {{ teamPeople(wave, idx).support }}
-                    </span>
-                    <span v-if="t.items.length < 4" class="team__warn">未满 4 人</span>
-                  </div>
-
-                  <div class="team__limits">
-                    <label>
-                      伤害门槛
-                      <input
-                        v-model.number="t.damageLimit"
-                        class="input team__limit-input"
-                        type="number"
-                        min="0"
-                        placeholder="0=不限"
-                      />
-                    </label>
-                    <label>
-                      奶量门槛
-                      <input
-                        v-model.number="t.healLimit"
-                        class="input team__limit-input"
-                        type="number"
-                        min="0"
-                        placeholder="0=不限"
-                      />
-                    </label>
-                    <label title="该队至少放入的输出角色数（满足配额后空位仍优先输出）">
-                      输出≥
-                      <input
-                        v-model.number="t.minDps"
-                        class="input team__limit-input"
-                        type="number"
-                        min="0"
-                        placeholder="0"
-                      />
-                    </label>
-                    <label title="该队至少放入的辅助角色数">
-                      辅助≥
-                      <input
-                        v-model.number="t.minSup"
-                        class="input team__limit-input"
-                        type="number"
-                        min="0"
-                        placeholder="1"
-                      />
-                    </label>
-                  </div>
-
-                  <ul class="team__list">
-                    <li
-                      v-for="(it, i) in t.items"
-                      :key="it.character.id"
-                      class="member-row"
-                      data-role="member"
-                      :data-wi="wi"
-                      :data-ti="idx"
-                      :data-i="i"
-                      @pointerdown="pdMember($event, wave, idx, it)"
-                      @mousedown="pdMember($event, wave, idx, it)"
-                    >
-                      <span class="drag-grip">⋮⋮</span>
-                      <span class="tag" :class="it.character.roleType === 'dps' ? 'tag--dps' : 'tag--support'">
-                        {{ roleLabel(it.character.roleType) }}
-                      </span>
-                      <span class="member-row__nick">{{ it.character.nickname }}</span>
-                      <span class="member-row__meta"
-                        >{{ it.character.job }} · {{ statLabel(it.character.roleType) }} {{ it.character.score }}</span
-                      >
-                    </li>
-                    <li v-if="t.items.length === 0" class="team__empty">（空）可把成员拖到这里</li>
-                  </ul>
-                </div>
+        <!-- 左：总览式网格（行=波次，列=队伍） -->
+        <div class="res-scroll">
+          <p class="create__hint">
+            每列一支队伍（列头可改门槛/配额，作用于所有波次的该队）；每行一个波次。拖拽成员可队内调整、同波跨队交换，或拖到右侧“替补区域”移出该波。
+          </p>
+          <div class="res-grid" :style="{ gridTemplateColumns: resGridCols() }">
+            <!-- 表头：波次列 + 每队一列（门槛/配额在列头统一编辑） -->
+            <div class="res-hd res-hd--round">波次</div>
+            <div
+              v-for="(t, idx) in baseTeams()"
+              :key="t.id"
+              class="res-hd res-hd--team"
+              :style="{ '--tc': baseTeamColor(idx) }"
+            >
+              <div class="res-hd__name">
+                <i class="team__dot"></i><b>{{ t.name }}</b>
+              </div>
+              <div class="res-hd__limits">
+                <label title="伤害门槛（0=不限）">
+                  <span>伤害</span>
+                  <input
+                    class="input res-limit-input"
+                    type="number"
+                    min="0"
+                    placeholder="0"
+                    :value="t.damageLimit ?? 0"
+                    @input="onColumnLimit(idx, 'damageLimit', $event)"
+                  />
+                </label>
+                <label title="奶量门槛（0=不限）">
+                  <span>奶量</span>
+                  <input
+                    class="input res-limit-input"
+                    type="number"
+                    min="0"
+                    placeholder="0"
+                    :value="t.healLimit ?? 0"
+                    @input="onColumnLimit(idx, 'healLimit', $event)"
+                  />
+                </label>
+                <label title="该队至少放入的输出角色数">
+                  <span>输出≥</span>
+                  <input
+                    class="input res-limit-input"
+                    type="number"
+                    min="0"
+                    placeholder="0"
+                    :value="t.minDps ?? 0"
+                    @input="onColumnLimit(idx, 'minDps', $event)"
+                  />
+                </label>
+                <label title="该队至少放入的辅助角色数">
+                  <span>辅助≥</span>
+                  <input
+                    class="input res-limit-input"
+                    type="number"
+                    min="0"
+                    placeholder="1"
+                    :value="t.minSup ?? 1"
+                    @input="onColumnLimit(idx, 'minSup', $event)"
+                  />
+                </label>
               </div>
             </div>
+
+            <!-- 每波一行 -->
+            <template v-for="(wave, wi) in waves" :key="wi">
+              <div class="res-round">
+                <b class="wave__label">{{ wave.label }}</b>
+                <span class="res-round__meta">已排 {{ wavePlaced(wave) }} / {{ wave.pool.length }}</span>
+                <button
+                  class="btn btn--sm"
+                  type="button"
+                  :disabled="wave.teams.length === 0"
+                  @click="reassignWave(wave)"
+                >
+                  重排本波
+                </button>
+              </div>
+              <div
+                v-for="(t, idx) in wave.teams"
+                :key="t.id"
+                class="res-cell"
+                data-role="team"
+                :data-wi="wi"
+                :data-ti="idx"
+                :class="{ 'is-empty': t.items.length === 0 }"
+                :style="{ '--tc': colorOf(wave, t.id) }"
+              >
+                <div class="res-cell__head">
+                  <span v-if="t.items.length" class="res-cell__stat">
+                    C {{ teamPeople(wave, idx).dps }} · 奶 {{ teamPeople(wave, idx).support }}
+                  </span>
+                  <span v-if="t.items.length === 0" class="res-cell__empty-tip">空</span>
+                  <span v-else-if="t.items.length < TEAM_SIZE" class="res-cell__warn">
+                    未满 {{ t.items.length }}/4
+                  </span>
+                  <span v-else class="res-cell__full">满员</span>
+                </div>
+                <ul class="res-cell__list">
+                  <li
+                    v-for="(it, i) in t.items"
+                    :key="it.character.id"
+                    class="member-row"
+                    data-role="member"
+                    :data-wi="wi"
+                    :data-ti="idx"
+                    :data-i="i"
+                    @pointerdown="pdMember($event, wave, idx, it)"
+                    @mousedown="pdMember($event, wave, idx, it)"
+                  >
+                    <span class="drag-grip">⋮⋮</span>
+                    <span class="tag" :class="it.character.roleType === 'dps' ? 'tag--dps' : 'tag--support'">
+                      {{ roleLabel(it.character.roleType) }}
+                    </span>
+                    <span class="member-row__nick">{{ it.character.nickname }}</span>
+                    <span class="member-row__meta"
+                      >{{ it.character.job }} · {{ statLabel(it.character.roleType) }} {{ it.character.score }}</span
+                    >
+                  </li>
+                  <li v-if="t.items.length === 0" class="team__empty">（空）可把成员拖到这里</li>
+                </ul>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -1683,5 +1884,175 @@ function save() {
   text-overflow: ellipsis;
   color: var(--app-text-secondary);
   font-size: 12px;
+}
+
+/* ===== 结果区：总览式多波网格（行=波次，列=队伍） ===== */
+.res-scroll {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.res-grid {
+  display: grid;
+  gap: 8px 12px;
+  align-items: start;
+  min-width: 720px;
+}
+
+.res-hd {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 8px 8px;
+  font-weight: 600;
+  color: var(--app-text);
+  border-bottom: 2px solid var(--app-border);
+}
+
+.res-hd--round {
+  justify-content: center;
+  align-self: center;
+}
+
+.res-hd__name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+
+  b {
+    font-size: 13px;
+  }
+}
+
+.res-hd__limits {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px 6px;
+}
+
+.res-hd__limits label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--app-text-secondary);
+  white-space: nowrap;
+}
+
+.res-limit-input {
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  padding: 0 4px;
+  font-size: 12px;
+  text-align: right;
+}
+
+.res-round {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 6px 2px;
+
+  .wave__label {
+    font-size: 14px;
+  }
+}
+
+.res-round__meta {
+  font-size: 12px;
+  color: var(--app-text-secondary);
+  white-space: nowrap;
+}
+
+.res-cell {
+  position: relative;
+  min-height: 60px;
+  padding: 6px 8px 8px;
+  border-radius: 8px;
+  background-color: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-left: 3px solid var(--tc);
+
+  &.is-empty {
+    background-color: transparent;
+    border-style: dashed;
+  }
+}
+
+.res-cell__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+
+.res-cell__stat {
+  color: var(--app-text-secondary);
+}
+
+.res-cell__warn {
+  color: var(--app-warn);
+}
+
+.res-cell__full {
+  color: var(--app-primary);
+  font-weight: 600;
+}
+
+.res-cell__empty-tip {
+  color: var(--app-text-secondary);
+  opacity: 0.7;
+}
+
+.res-cell__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+
+  .member-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background-color: var(--app-bg);
+  }
+
+  .member-row__nick {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--app-text);
+  }
+
+  .member-row__meta {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--app-text-secondary);
+  }
+
+  .team__empty {
+    padding: 12px 0;
+    text-align: center;
+  }
+}
+
+@media (max-width: 960px) {
+  .res-scroll {
+    width: 100%;
+  }
 }
 </style>

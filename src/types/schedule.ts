@@ -78,6 +78,8 @@ export interface Schedule {
   /** 旧版字段：每队统一辅助门槛（保留兼容） */
   teamHealLimit?: number;
   teams: Team[];
+  /** 替补区角色快照（整组合并替补，保存在组内第一场；可选，兼容旧数据） */
+  bench?: ScheduledSlot[];
 }
 
 /** 模板中的一个队伍配置 */
