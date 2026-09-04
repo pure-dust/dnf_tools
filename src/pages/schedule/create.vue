@@ -1582,8 +1582,9 @@ function save() {
 }
 
 .bench-zone--global {
-  flex: 0 0 260px;
-  width: 260px;
+  flex: 0 0 320px;
+  width: 320px;
+  min-height: 180px;
   position: sticky;
   top: 8px;
   max-height: calc(100vh - 100px);

@@ -139,7 +139,7 @@ function remove(t: Template) {
                 <span class="tpl__dot"></span>
                 {{ c.team.name }} · 伤害{{ c.team.damageLimit + "千亿" || "不限" }} · 奶量{{ c.team.healLimit || "不限" }}
                 <template v-if="(c.team.minDps ?? 0) > 0 || (c.team.minSup ?? 0) > 0">
-                  · 出≥{{ c.team.minDps ?? 0 }} 辅≥{{ c.team.minSup ?? 0 }}
+                  · C≥{{ c.team.minDps ?? 0 }} 奶≥{{ c.team.minSup ?? 0 }}
                 </template>
               </span>
           </div>
