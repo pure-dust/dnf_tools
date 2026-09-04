@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
 import type { Schedule, ScheduledSlot } from "../../types/schedule"
-import { scheduleTitle } from "../../types/schedule"
+import { effScore, fmtEffScore, scheduleTitle } from "../../types/schedule"
 import { ensureLoaded, removeSchedule, useScheduleStore } from "../../composables/useScheduleStore"
 import { colorizeTeams } from "../../utils/teamColor"
 
@@ -128,6 +128,12 @@ function ovColName(c: OvColumn): string {
   return OV_COLOR_NAMES[c.rank % OV_COLOR_NAMES.length]
 }
 
+/** 总览中某角色是否“车头”：该场保存了车头限制，且为输出且有效伤害 ≥ 阈值 */
+function isCarSlot(s: Schedule, mb: ScheduledSlot): boolean {
+  const th = s.carHeader ?? 0
+  return th > 0 && mb.roleType === "dps" && effScore(mb.job, mb.score) >= th
+}
+
 /** 总览 Grid 的列模板：首列场次 +（点击高亮时新增“高亮角色”列）+ 每队一列（等宽） */
 function ovGridCols(g: HistGroup): string {
   const hl = ovHl.value && ovHl.value.g === g.key ? "128px " : ""
@@ -140,6 +146,23 @@ function ovGridCols(g: HistGroup): string {
 function ovMembers(s: Schedule, c: OvColumn) {
   const t = s.teams.find((x) => x.id === c.key) ?? s.teams.find((x) => x.name === c.name)
   return t ? t.members : []
+}
+
+/** 某场某队的“总伤害 / 总伤害限制(目标)”摘要文本与是否未达标 */
+function ovTot(s: Schedule, c: OvColumn) {
+  const t = s.teams.find((x) => x.id === c.key) ?? s.teams.find((x) => x.name === c.name)
+  const members = t?.members ?? []
+  const sum = members.reduce(
+    (a, mb) => a + (mb.roleType === "dps" ? effScore(mb.job, mb.score) : 0),
+    0,
+  )
+  const limit = t?.totalDamageLimit ?? 0
+  const r = Math.round(sum * 10) / 10
+  return {
+    text: String(r) + (limit > 0 ? `/${limit}` : ""),
+    ok: limit > 0 && sum >= limit,
+    low: limit > 0 && sum < limit,
+  }
 }
 
 /* ---------------- 总览：点击角色高亮其所属成员的全部角色 ---------------- */
@@ -243,11 +266,11 @@ function ovHlOf(s: Schedule): ScheduledSlot[] {
                       v-for="mb in ovHlOf(s)"
                       :key="mb.characterId"
                       class="ov-chip is-hl"
-                      :class="mb.roleType === 'dps' ? 'is-dps' : 'is-sup'"
-                      :title="`${mb.memberName} · ${mb.job} · ${mb.roleType === 'dps' ? '伤害(千亿) ' : '奶量 '}${mb.score}（点击取消高亮）`"
+                      :class="[mb.roleType === 'dps' ? 'is-dps' : 'is-sup', { 'is-car': isCarSlot(s, mb) }]"
+                      :title="`${mb.memberName} · ${mb.job} · ${mb.roleType === 'dps' ? '伤害(千亿) ' : '奶量 '}${fmtEffScore(mb.job, mb.score)}${isCarSlot(s, mb) ? ' · 车头' : ''}（点击取消高亮）`"
                       @click="ovToggleHl(g, mb)"
                     >
-                      {{ mb.nickname }}
+                      <span class="ov-chip__name">{{ mb.nickname }}</span>
                     </span>
                   </template>
                   <span v-else class="ov-empty">—</span>
@@ -258,11 +281,18 @@ function ovHlOf(s: Schedule): ScheduledSlot[] {
                       v-for="mb in ovMembers(s, c)"
                       :key="mb.characterId"
                       class="ov-chip"
-                      :class="[mb.roleType === 'dps' ? 'is-dps' : 'is-sup', { 'is-hl': ovIsHl(g, mb) }]"
-                      :title="`${mb.memberName} · ${mb.job} · ${mb.roleType === 'dps' ? '伤害(千亿) ' : '奶量 '}${mb.score}${ovIsHl(g, mb) ? '（点击取消高亮）' : '（点击高亮该成员全部角色）'}`"
+                      :class="[mb.roleType === 'dps' ? 'is-dps' : 'is-sup', { 'is-hl': ovIsHl(g, mb), 'is-car': isCarSlot(s, mb) }]"
+                      :title="`${mb.memberName} · ${mb.job} · ${mb.roleType === 'dps' ? '伤害(千亿) ' : '奶量 '}${fmtEffScore(mb.job, mb.score)}${isCarSlot(s, mb) ? ' · 车头' : ''}${ovIsHl(g, mb) ? '（点击取消高亮）' : '（点击高亮该成员全部角色）'}`"
                       @click="ovToggleHl(g, mb)"
                     >
-                      {{ mb.nickname }}
+                      <span class="ov-chip__name">{{ mb.nickname }}</span>
+                    </span>
+                    <span
+                      class="ov-tot"
+                      :class="{ 'is-ok': ovTot(s, c).ok, 'is-low': ovTot(s, c).low }"
+                      title="该队输出总伤害 / 总伤害限制"
+                    >
+                      总伤 {{ ovTot(s, c).text }}
                     </span>
                   </template>
                   <span v-else class="ov-empty">—</span>
@@ -482,9 +512,58 @@ function ovHlOf(s: Schedule): ScheduledSlot[] {
   &.is-hl {
     background-color: red;
   }
+
+  /* 车头角色：背景醒目大 ★ 图标（文字在上层） */
+  &.is-car {
+    position: relative;
+    overflow: hidden;
+
+    &::before {
+      content: "★";
+      position: absolute;
+      top: 4px;
+      left: 4px;
+      transform: translate(-50%, -50%);
+      font-size: 24px;
+      line-height: 1;
+      color: #ffd54a;
+      text-shadow: 0 0 5px rgba(0, 0, 0, 0.45);
+      pointer-events: none;
+      z-index: 0;
+    }
+  }
+}
+
+.ov-chip__name {
+  position: relative;
+  z-index: 1;
+}
+
+.ov-chip.is-car .ov-chip__name {
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
 }
 
 .ov-empty {
   color: var(--app-text-secondary);
 }
-</style>
+
+.ov-tot {
+  margin: 2px 0;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  color: var(--app-text-secondary);
+  background-color: color-mix(in srgb, currentColor 12%, transparent);
+
+  /* 达标：绿色 */
+  &.is-ok {
+    color: var(--app-success);
+  }
+
+  /* 未达标：红色 */
+  &.is-low {
+    color: var(--app-danger);
+  }
+}</style>

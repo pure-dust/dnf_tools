@@ -164,6 +164,17 @@ textarea.input {
     );
   }
 
+  &--car {
+    color: var(--app-warn);
+    background-color: color-mix(
+      in srgb,
+      var(--app-warn) 15%,
+      transparent
+    );
+    border: 1px solid color-mix(in srgb, var(--app-warn) 55%, transparent);
+    font-weight: 600;
+  }
+
   &--muted {
     color: var(--app-text-secondary);
     background-color: var(--app-border);

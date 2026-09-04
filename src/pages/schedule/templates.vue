@@ -23,6 +23,8 @@ interface Row extends TeamLike {
   name: string;
   damageLimit: number;
   healLimit: number;
+  /** 总伤害下限 */
+  totalDamageLimit: number;
   /** 最少输出角色数 */
   minDps: number;
   /** 最少辅助角色数 */
@@ -31,9 +33,12 @@ interface Row extends TeamLike {
 
 const dialog = ref(false);
 const editingId = ref<string | null>(null);
-const draft = reactive<{ name: string; maxMembers: number; teams: Row[] }>({
+const draft = reactive<{ name: string; maxMembers: number; minDamage: number; minHeal: number; carHeader: number; teams: Row[] }>({
   name: "",
   maxMembers: 16,
+  minDamage: 0,
+  minHeal: 0,
+  carHeader: 0,
   teams: [],
 });
 
@@ -48,6 +53,9 @@ function openCreate() {
   editingId.value = null;
   draft.name = "";
   draft.maxMembers = 16;
+  draft.minDamage = 0;
+  draft.minHeal = 0;
+  draft.carHeader = 0;
   draft.teams = [];
   addRow();
 }
@@ -57,11 +65,15 @@ function openEdit(t: Template) {
   editingId.value = t.id;
   draft.name = t.name;
   draft.maxMembers = t.maxMembers;
+  draft.minDamage = t.minDamage ?? 0;
+  draft.minHeal = t.minHeal ?? 0;
+  draft.carHeader = t.carHeader ?? 0;
   draft.teams = t.teams.map((c) => ({
     id: c.id,
     name: c.name,
     damageLimit: c.damageLimit,
     healLimit: c.healLimit,
+    totalDamageLimit: c.totalDamageLimit ?? 0,
     minDps: c.minDps ?? 0,
     minSup: c.minSup ?? 1,
   }));
@@ -73,6 +85,7 @@ function addRow() {
     name: `${draft.teams.length + 1}队`,
     damageLimit: 0,
     healLimit: 0,
+    totalDamageLimit: 0,
     minDps: 0,
     minSup: 1,
   });
@@ -81,7 +94,7 @@ function removeRow(i: number) {
   draft.teams.splice(i, 1);
 }
 
-const rowsValid = computed(() => draft.teams.length >= 1 && draft.teams.every((t) => (t.damageLimit ?? 0) >= 0 && (t.healLimit ?? 0) >= 0));
+const rowsValid = computed(() => draft.teams.length >= 1 && draft.teams.every((t) => (t.damageLimit ?? 0) >= 0 && (t.healLimit ?? 0) >= 0 && (t.totalDamageLimit ?? 0) >= 0));
 const canSave = computed(() => draft.name.trim().length > 0 && rowsValid.value);
 
 function submit() {
@@ -91,14 +104,24 @@ function submit() {
     name: t.name || "队",
     damageLimit: t.damageLimit || 0,
     healLimit: t.healLimit || 0,
+    totalDamageLimit: t.totalDamageLimit || 0,
     minDps: t.minDps ?? 0,
     minSup: t.minSup ?? 1,
   }));
   if (editingId.value) {
     const cur = store.data.templates.find((t) => t.id === editingId.value);
-    if (cur) updateTemplate({ ...cur, name: draft.name.trim(), maxMembers: draft.maxMembers || 1, teams });
+    if (cur)
+      updateTemplate({
+        ...cur,
+        name: draft.name.trim(),
+        maxMembers: draft.maxMembers || 1,
+        minDamage: draft.minDamage || 0,
+        minHeal: draft.minHeal || 0,
+        carHeader: draft.carHeader || 0,
+        teams,
+      });
   } else {
-    addTemplate(draft.name.trim(), draft.maxMembers || 1, teams);
+    addTemplate(draft.name.trim(), draft.maxMembers || 1, teams, draft.minDamage || 0, draft.minHeal || 0, draft.carHeader || 0);
   }
   dialog.value = false;
 }
@@ -128,7 +151,14 @@ function remove(t: Template) {
       <section v-for="t in store.data.templates" :key="t.id" class="tpl panel">
         <div class="tpl__main">
           <h3 class="tpl__name">{{ t.name }}</h3>
-          <p class="tpl__meta">参与人数上限 {{ t.maxMembers }} · {{ t.teams.length }} 个队伍</p>
+          <p class="tpl__meta">参与人数上限 {{ t.maxMembers }} · {{ t.teams.length }} 个队伍
+            <template v-if="(t.minDamage ?? 0) > 0 || (t.minHeal ?? 0) > 0">
+              · 自动门槛 伤≥{{ t.minDamage ?? 0 }} 奶≥{{ t.minHeal ?? 0 }}
+            </template>
+            <template v-if="(t.carHeader ?? 0) > 0">
+              · 车头伤害≥{{ t.carHeader ?? 0 }}（每班红队 1 个）
+            </template>
+          </p>
           <div class="tpl__teams">
               <span
                 v-for="c in colored(t.teams)"
@@ -138,6 +168,9 @@ function remove(t: Template) {
               >
                 <span class="tpl__dot"></span>
                 {{ c.team.name }} · 伤害{{ c.team.damageLimit + "千亿" || "不限" }} · 奶量{{ c.team.healLimit || "不限" }}
+                <template v-if="(c.team.totalDamageLimit ?? 0) > 0">
+                  · 总伤≥{{ c.team.totalDamageLimit }}
+                </template>
                 <template v-if="(c.team.minDps ?? 0) > 0 || (c.team.minSup ?? 0) > 0">
                   · C≥{{ c.team.minDps ?? 0 }} 奶≥{{ c.team.minSup ?? 0 }}
                 </template>
@@ -167,6 +200,43 @@ function remove(t: Template) {
           </div>
         </div>
 
+          <div class="form-grid">
+            <div class="form-field">
+              <label>最低伤害限制</label>
+              <input
+                v-model.number="draft.minDamage"
+                class="input"
+                type="number"
+                min="0"
+                placeholder="0=不限"
+              />
+              <small>低于此分的输出不参与自动排班，只能手动拖动</small>
+            </div>
+            <div class="form-field">
+              <label>最低奶量限制</label>
+              <input
+                v-model.number="draft.minHeal"
+                class="input"
+                type="number"
+                min="0"
+                placeholder="0=不限"
+              />
+              <small>低于此分的辅助不参与自动排班，只能手动拖动</small>
+            </div>
+          </div>
+
+          <div class="form-field">
+            <label>车头伤害限制（输出≥此分视为“车头”）</label>
+            <input
+              v-model.number="draft.carHeader"
+              class="input"
+              type="number"
+              min="0"
+              placeholder="0=关闭"
+            />
+            <small>车头会尽量分散到不同班次：自动排班时每个班次红队只放 1 个车头，避免伤害最高的大C扎堆同班（0=关闭）</small>
+          </div>
+
         <div class="tpl-editor">
           <div class="tpl-editor__head">
             <b>队伍</b>
@@ -184,13 +254,17 @@ function remove(t: Template) {
                 奶量门槛
                 <input v-model.number="row.healLimit" class="input" type="number" min="0" placeholder="0=不限" />
               </label>
+              <label title="该队输出总伤害下限：队内输出有效伤害合计需≥此值">
+                总伤≥
+                <input v-model.number="row.totalDamageLimit" class="input" type="number" min="0" placeholder="0=不限" />
+              </label>
               <label title="该队至少放入的输出角色数">
                 输出≥
-                <input v-model.number="row.minDps" class="input tpl-editor__num" type="number" min="0" placeholder="0" />
+                <input v-model.number="row.minDps" class="input" type="number" min="0" placeholder="0" />
               </label>
               <label title="该队至少放入的辅助角色数">
                 辅助≥
-                <input v-model.number="row.minSup" class="input tpl-editor__num" type="number" min="0" placeholder="1" />
+                <input v-model.number="row.minSup" class="input" type="number" min="0" placeholder="1" />
               </label>
             </div>
             <button class="btn btn--sm btn--danger" type="button" :disabled="draft.teams.length <= 1" @click="removeRow(i)">
@@ -291,7 +365,7 @@ function remove(t: Template) {
   }
 
   .dialog--wide {
-    width: min(600px, calc(100vw - 40px));
+    width: min(840px, calc(100vw - 40px));
   }
 
   .tpl-editor {
@@ -337,6 +411,7 @@ function remove(t: Template) {
       min-width: 220px;
 
       label {
+        white-space: nowrap;
         flex: 1;
         display: flex;
         align-items: center;

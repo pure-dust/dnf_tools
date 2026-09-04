@@ -152,8 +152,23 @@ export function replaceSchedules(removeIds: string[], add: Schedule[]) {
 }
 // ---------------- 排班模板 ----------------
 
-export function addTemplate(name: string, maxMembers: number, teams: TemplateTeam[]): Template {
-  const tpl: Template = { id: uid(), name, maxMembers, teams };
+export function addTemplate(
+  name: string,
+  maxMembers: number,
+  teams: TemplateTeam[],
+  minDamage = 0,
+  minHeal = 0,
+  carHeader = 0,
+): Template {
+  const tpl: Template = {
+    id: uid(),
+    name,
+    maxMembers,
+    teams,
+    minDamage: minDamage || 0,
+    minHeal: minHeal || 0,
+    carHeader: carHeader || 0,
+  };
   store.data.templates.push(tpl);
   void persist();
   return tpl;

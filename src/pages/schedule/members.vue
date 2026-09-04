@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from "vue";
 import type { Character, Member } from "../../types/schedule";
-import { JOB_SUGGESTIONS, roleLabel, statLabel } from "../../types/schedule";
+import { JOB_kIND, fmtEffScore, roleLabel, statLabel } from "../../types/schedule";
 import {
   addCharacter,
   addMember,
@@ -421,7 +421,7 @@ function doImport() {
                   {{ roleLabel(c.roleType) }} · {{ c.job }}
                 </span>
                 <span class="char__field">名望 {{ c.fame }}</span>
-                <span class="char__field">{{ statLabel(c.roleType) }} {{ c.score }}</span>
+                <span class="char__field">{{ statLabel(c.roleType) }} {{ fmtEffScore(c.job, c.score) }}</span>
                 <span class="char__ops">
                   <button class="btn btn--sm" type="button" @click="openCharDialog(m.id, c)">编辑</button>
                   <button class="btn btn--sm btn--danger" type="button" @click="removeCharacterConfirm(m.id, c)">删除</button>
@@ -512,10 +512,10 @@ function doImport() {
             :placeholder="charDraft.roleType === 'dps' ? '如：剑帝' : '如：奶妈'"
           />
           <datalist id="job-options-dps">
-            <option v-for="j in JOB_SUGGESTIONS.dps" :key="j" :value="j" />
+            <option v-for="j in JOB_kIND.dps" :key="j" :value="j" />
           </datalist>
           <datalist id="job-options-support">
-            <option v-for="j in JOB_SUGGESTIONS.support" :key="j" :value="j" />
+            <option v-for="j in JOB_kIND.support" :key="j" :value="j" />
           </datalist>
         </div>
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { Schedule, Team } from "../types/schedule";
-import { roleLabel, scheduleTitle, statLabel } from "../types/schedule";
+import { fmtEffScore, roleLabel, scheduleTitle, statLabel } from "../types/schedule";
 import { colorizeTeams } from "../utils/teamColor";
 
 const props = defineProps<{
@@ -75,7 +75,7 @@ const teamPeople = (t: Team) =>
             </span>
             <span class="sboard__job">{{ s.job }}</span>
             <span class="sboard__stat">
-              {{ statLabel(s.roleType) }} {{ s.score }} · 名望 {{ s.fame }}
+              {{ statLabel(s.roleType) }} {{ fmtEffScore(s.job, s.score) }} · 名望 {{ s.fame }}
             </span>
           </li>
           <li v-if="c.team.members.length === 0" class="sboard__empty">空队</li>

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import type { Character, Member, Schedule, ScheduledSlot, Template } from "../../types/schedule"
-import { roleLabel, statLabel, uid } from "../../types/schedule"
+import { effScore, fmtEffScore, roleLabel, statLabel, uid } from "../../types/schedule"
 import { ensureLoaded, replaceSchedules, saveSchedule, useScheduleStore } from "../../composables/useScheduleStore"
 import type { DraftItem, TeamDraft } from "../../utils/team"
 import {
@@ -12,6 +12,7 @@ import {
   splitRounds,
   teamCounts,
   toScheduleTeams,
+  totalDmgEff,
   TEAM_SIZE,
 } from "../../utils/team"
 import { colorizeTeams } from "../../utils/teamColor"
@@ -85,6 +86,7 @@ async function loadForEdit(groupKey: string) {
       name: team.name,
       damageLimit: team.damageLimit || 0,
       healLimit: team.healLimit || 0,
+      totalDamageLimit: team.totalDamageLimit || 0,
       minDps: team.minDps ?? 0,
       minSup: team.minSup ?? 1,
       items: (team.members ?? []).map((slot) => {
@@ -201,6 +203,7 @@ async function loadForEdit(groupKey: string) {
 
   hasGenerated.value = true
   editingGroupKey.value = groupKey
+  pickAreaOpen.value = true // 编辑历史：默认展开成员便于核对
 }
 
 /* ---------- 可排人选 ---------- */
@@ -228,12 +231,13 @@ const supportSelected = computed(
  */
 const roundCount = computed(() => {
   const cap = Math.min(Math.max(templateMax.value || 1, 1), 20)
-  if (!selectedCount.value || !cap) return 0
-  return estimateWaveCount(selectedItems(), cap)
+  const auto = autoItems()
+  if (!auto.length || !cap) return 0
+  return estimateWaveCount(auto, cap)
 })
 
-/** 参与成员数（勾选角色去重后的成员人数） */
-const selMemberCount = computed(() => new Set(selectedItems().map((i) => i.memberId)).size)
+/** 参与自动排班的成员数（勾选且达标角色去重后的成员人数） */
+const selMemberCount = computed(() => new Set(autoItems().map((i) => i.memberId)).size)
 
 /** 每波实际可容纳人数 = min(模板每班上限, 参与成员数)：同人每班 1 号 → 成员不足时装不满模板容量 */
 const waveCap = computed(() => {
@@ -260,6 +264,8 @@ function clearAll() {
 
 /* ---------- 选择角色：按成员折叠 ---------- */
 const pickOpen = ref<string[]>([])
+/** ③ 选择参与角色 整区默认折叠（展开后才显示成员） */
+const pickAreaOpen = ref(false)
 
 function pickToggle(m: Member) {
   pickOpen.value = pickOpen.value.includes(m.id) ? pickOpen.value.filter((x) => x !== m.id) : [...pickOpen.value, m.id]
@@ -300,6 +306,47 @@ function resetResult() {
   hasGenerated.value = false
 }
 
+/** 是否低于模板的“最低伤害/最低奶量”限制（此类角色不参与自动排班，只能手动拖） */
+function isBelowMin(it: DraftItem): boolean {
+  const tmpl = template.value
+  if (!tmpl) return false
+  if (it.character.roleType === "support") {
+    const min = tmpl.minHeal ?? 0
+    return min > 0 && effScore(it.character.job, it.character.score) < min
+  }
+  const min = tmpl.minDamage ?? 0
+  return min > 0 && effScore(it.character.job, it.character.score) < min
+}
+
+/** 模板的“车头伤害限制”（0=关闭） */
+function carThreshold(): number {
+  return template.value?.carHeader ?? 0
+}
+
+/** 某角色是否“车头”：输出且伤害 ≥ 车头限制 */
+function isCarHeadChar(c: Character): boolean {
+  const th = carThreshold()
+  return th > 0 && c.roleType === "dps" && effScore(c.job, c.score) >= th
+}
+
+/** 某已选角色是否“车头”（DraftItem 版） */
+function isCarHead(it: DraftItem): boolean {
+  return isCarHeadChar(it.character)
+}
+
+/** 本班是否已放有车头（若有则不再自动补第二个车头） */
+function waveHasCar(wave: Wave): boolean {
+  return wave.teams.some((t) => t.items.some(isCarHead))
+}
+
+/** 达到门槛、可参与自动排班的已选角色 */
+function autoItems(): DraftItem[] {
+  return selectedItems().filter((i) => !isBelowMin(i))
+}
+
+/** 已选但低于门槛（只能手动拖）的角色数 */
+const lowSelectedCount = computed(() => selectedItems().filter(isBelowMin).length)
+
 function selectedItems(): DraftItem[] {
   return pool.value.filter((p) => selectedIds.value.includes(p.character.id))
 }
@@ -313,9 +360,23 @@ function generate() {
   const items = selectedItems()
   if (!items.length) return
   const cap = Math.min(Math.max(templateMax.value || 1, 1), 20)
-  const { waves: rounds, bench: overflow } = splitRounds(items, cap)
+  // 低于“最低伤害/最低奶量”门槛的角色不参与自动排班，仅放入替补区供手动拖
+  const auto = items.filter((i) => !isBelowMin(i))
+  const low = items.filter((i) => isBelowMin(i))
+  if (!auto.length) {
+    alert("没有达到模板“最低伤害/奶量限制”的角色可自动排班；低于限制的角色只能手动拖动。")
+    return
+  }
+  // 模板任一队设了“总伤害下限”→ 分班时按总伤跨班均衡（各班输出总伤害趋于平均，避免两极）
+  const dmgBalance = (template.value?.teams ?? []).some((t) => (t.totalDamageLimit ?? 0) > 0)
+  const { waves: rounds, bench: overflow } = splitRounds(
+    auto,
+    cap,
+    template.value?.carHeader ?? 0,
+    dmgBalance,
+  )
   const ws: Wave[] = []
-  const benchAll: DraftItem[] = [...overflow]
+  const benchAll: DraftItem[] = [...low, ...overflow]
   rounds.forEach((poolItems, i) => {
     const base = emptyDraftsFromTemplate(template.value!.teams)
     const res = assignByLimits(base, poolItems)
@@ -343,16 +404,17 @@ function fillTeamFromBench(wave: Wave, team: TeamDraft) {
     wave.teams.some((t) => t.items.some((x) => x.memberId === item.memberId))
   if (team.items.length >= TEAM_SIZE) return
   const minSup = team.minSup ?? 1
-  // ① 补辅助缺口（不超编：最多补到 minSup）
+  // ① 补辅助缺口（不超编：最多补到 minSup；跳过低门槛角色）
   while (team.items.length < TEAM_SIZE && supCount(team.items) < minSup) {
-    const idx = used.findIndex((i) => isSup(i) && !inWave(i))
+    const idx = used.findIndex((i) => isSup(i) && !isBelowMin(i) && !inWave(i))
     if (idx < 0) break
     const it = used.splice(idx, 1)[0]
     team.items.push(it)
   }
-  // ② 补输出直到满 4 人（输出不足则停在不满员）
+  // ② 补输出直到满 4 人（跳过低门槛角色；班内红队已有车头则不再自动补第二个车头）
   while (team.items.length < TEAM_SIZE) {
-    const idx = used.findIndex((i) => !isSup(i) && !inWave(i))
+    const hasCar = waveHasCar(wave)
+    const idx = used.findIndex((i) => !isSup(i) && !isBelowMin(i) && !inWave(i) && (!hasCar || !isCarHead(i)))
     if (idx < 0) break
     const it = used.splice(idx, 1)[0]
     team.items.push(it)
@@ -381,15 +443,20 @@ function insertBenchToTeams() {
 
 /**
  * 自动补位（简单版）：把替补区角色直接插回“有空位队伍且同班不含该成员”的队，
- * 不看门槛/顺序；放不下的保留替补。用于生成后手动调整时快速回填空位。
+ * 不看门槛/顺序；放不下的保留替补。低于模板门槛的角色不会自动补位（只能手动拖）。
  */
 function autoFillBench() {
   if (!mergedBench.value.length) return
   const rest: DraftItem[] = []
   for (const item of mergedBench.value) {
+    if (isBelowMin(item)) {
+      rest.push(item) // 低门槛角色仅手动拖，自动补位跳过
+      continue
+    }
     let placed = false
     for (const wave of waves.value) {
       if (hasSameMemberInWave(wave, item)) continue // 同班不可重复同一成员
+      if (isCarHead(item) && waveHasCar(wave)) continue // 车头不放进已有车头的班
       const team = wave.teams.find((t) => t.items.length < TEAM_SIZE)
       if (team) {
         team.items.push(item)
@@ -425,7 +492,7 @@ function baseTeamColor(idx: number): string {
 /** 列头门槛/配额改动 → 同步到全部波次的同一列队伍 */
 function onColumnLimit(
   idx: number,
-  field: "damageLimit" | "healLimit" | "minDps" | "minSup",
+  field: "damageLimit" | "healLimit" | "totalDamageLimit" | "minDps" | "minSup",
   ev: Event,
 ) {
   const raw = (ev.target as HTMLInputElement).value
@@ -454,6 +521,12 @@ function colorOf(wave: Wave, teamId: string): string {
 
 function teamPeople(wave: Wave, idx: number) {
   return teamCounts(wave.teams[idx].items)
+}
+
+/** 总伤害值展示：保留最多 1 位小数（整数不带小数点） */
+function fmtAmt(n: number): string {
+  const r = Math.round(n * 10) / 10
+  return Number.isInteger(r) ? String(r) : String(r)
 }
 
 function wavePlaced(wave: Wave) {
@@ -656,7 +729,7 @@ function buildGhost(item: DraftItem) {
   nick.textContent = ch.nickname
   const meta = document.createElement("span")
   meta.className = "drag-ghost__meta"
-  meta.textContent = `${ch.job} · ${statLabel(ch.roleType)} ${ch.score}`
+  meta.textContent = `${ch.job} · ${statLabel(ch.roleType)} ${fmtEffScore(ch.job, ch.score)}`
   g.append(tag, nick, meta)
   return g
 }
@@ -858,6 +931,7 @@ function save() {
         createdAt: old?.createdAt ?? created,
         templateId: template.value!.id,
         templateName: template.value!.name,
+        carHeader: template.value!.carHeader ?? 0,
         maxMembers: templateMax.value,
         groupId: coverGroupId,
         roundLabel: waves.value.length > 1 ? wave.label : undefined,
@@ -888,6 +962,7 @@ function save() {
       createdAt: created,
       templateId: template.value!.id,
       templateName: template.value!.name,
+      carHeader: template.value!.carHeader ?? 0,
       maxMembers: templateMax.value,
       groupId,
       roundLabel: waves.value.length > 1 ? wave.label : undefined,
@@ -920,7 +995,7 @@ function save() {
           @click="selectTemplate(t)"
         >
           <span class="tmpl-pick__name">{{ t.name }}</span>
-          <span class="tmpl-pick__meta">人数 {{ t.maxMembers }} · {{ t.teams.length }} 队</span>
+          <span class="tmpl-pick__meta">人数 {{ t.maxMembers }} · {{ t.teams.length }} 队<template v-if="(t.carHeader ?? 0) > 0"> · 车头≥{{ t.carHeader }}</template></span>
           <span class="tmpl-pick__rows">
             <i
               v-for="c in colorizeTeams(t.teams)"
@@ -933,6 +1008,9 @@ function save() {
       </div>
       <p v-if="template" class="tmpl-pick__note">
         已选「{{ template.name }}」：参与上限 {{ templateMax }} 人 · 队伍颜色按伤害门槛从高到低为红→黄→绿→蓝
+        <template v-if="(template.carHeader ?? 0) > 0">
+          · 车头伤害≥{{ template.carHeader }}（每班红队尽量只放 1 个车头）
+        </template>
       </p>
     </section>
 
@@ -956,6 +1034,9 @@ function save() {
       <div class="create__pick-head">
         <h3 class="panel__title">③ 选择参与角色</h3>
         <div class="create__pick-meta">
+          <button class="btn btn--sm" type="button" @click="pickAreaOpen = !pickAreaOpen">
+            {{ pickAreaOpen ? "收起成员" : "展开成员" }}
+          </button>
           <button class="btn btn--sm" type="button" @click="selectAll">全选可排角色</button>
           <button class="btn btn--sm" type="button" @click="clearAll">清空</button>
           <span class="create__pick-count">
@@ -964,56 +1045,71 @@ function save() {
               · 将分 <b>{{ roundCount }}</b> 波（每波 ≤ {{ waveCap }} 人
               <template v-if="waveCap < templateMax">，受成员人数 {{ selMemberCount }} 限制</template>）
             </template>
+            <template v-if="lowSelectedCount > 0">
+              · 低标 <b>{{ lowSelectedCount }}</b> 个（仅手动）
+            </template>
             · 输出 {{ dpsSelected }} · 辅助 {{ supportSelected }}
           </span>
         </div>
       </div>
 
-      <p v-if="schedulableMembers.length === 0" class="empty">暂无可排班成员，请先到「成员管理」添加成员与角色</p>
+      <div v-show="pickAreaOpen">
+        <p v-if="schedulableMembers.length === 0" class="empty">暂无可排班成员，请先到「成员管理」添加成员与角色</p>
 
-      <div v-else class="pick-group">
-        <div v-for="m in schedulableMembers" :key="m.id" class="pick-member" :class="{ 'is-open': pickOpenState(m) }">
-          <div class="pick-member__head" @click="pickToggle(m)">
-            <span class="pick-member__avatar">{{ m.nickname.slice(0, 1) }}</span>
-            <span class="pick-member__name">{{ m.nickname }}</span>
-            <span class="pick-member__meta">
-              已选 <b>{{ pickSelectedCount(m) }}</b
-              >/{{ m.characters.length }} · 输出 {{ pickRoleCounts(m).dps }} · 辅助 {{ pickRoleCounts(m).support }}
-            </span>
-            <button
-              class="pick-member__chev"
-              type="button"
-              :aria-label="pickOpenState(m) ? '收起角色' : '展开角色'"
-              @click.stop="pickToggle(m)"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                width="15"
-                height="15"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <polyline points="6 9 12 15 18 9" />
-              </svg>
-            </button>
-          </div>
-
-          <div v-show="pickOpenState(m)" class="pick-member__chars">
-            <label v-for="c in m.characters" :key="c.id" class="pick-char">
-              <input type="checkbox" :checked="selectedIds.includes(c.id)" @change="toggleSelect(c.id)" />
-              <span class="pick-char__name">{{ c.nickname }}</span>
-              <span class="tag" :class="c.roleType === 'dps' ? 'tag--dps' : 'tag--support'">
-                {{ roleLabel(c.roleType) }}
+        <div v-else class="pick-group">
+          <div v-for="m in schedulableMembers" :key="m.id" class="pick-member" :class="{ 'is-open': pickOpenState(m) }">
+            <div class="pick-member__head" @click="pickToggle(m)">
+              <span class="pick-member__avatar">{{ m.nickname.slice(0, 1) }}</span>
+              <span class="pick-member__name">{{ m.nickname }}</span>
+              <span class="pick-member__meta">
+                已选 <b>{{ pickSelectedCount(m) }}</b
+                >/{{ m.characters.length }} · 输出 {{ pickRoleCounts(m).dps }} · 辅助 {{ pickRoleCounts(m).support }}
               </span>
-              <span class="pick-char__meta">{{ statLabel(c.roleType) }} {{ c.score }} · 名望 {{ c.fame }}</span>
-            </label>
+              <button
+                class="pick-member__chev"
+                type="button"
+                :aria-label="pickOpenState(m) ? '收起角色' : '展开角色'"
+                @click.stop="pickToggle(m)"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  width="15"
+                  height="15"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+            </div>
+
+            <div v-show="pickOpenState(m)" class="pick-member__chars">
+              <label v-for="c in m.characters" :key="c.id" class="pick-char">
+                <input type="checkbox" :checked="selectedIds.includes(c.id)" @change="toggleSelect(c.id)" />
+                <span class="pick-char__name">{{ c.nickname }}</span>
+                <span class="tag" :class="c.roleType === 'dps' ? 'tag--dps' : 'tag--support'">
+                  {{ roleLabel(c.roleType) }}
+                </span>
+                <span v-if="isCarHeadChar(c)" class="tag tag--car">车头</span>
+                <span class="pick-char__meta">{{ statLabel(c.roleType) }} {{ fmtEffScore(c.job, c.score) }} · 名望 {{ c.fame }}</span>
+              </label>
+            </div>
           </div>
         </div>
       </div>
+      <p v-if="!pickAreaOpen" class="create__hint">
+        成员列表已折叠（已选 {{ selectedCount }}）—— 点击「展开成员」勾选角色后，再点下方「自动生成队伍」
+      </p>
+    </section>
 
+    <!-- 生成队伍（常驻区域，不随成员列表折叠） -->
+    <section class="panel">
+      <div class="create__pick-head">
+        <h3 class="panel__title">生成队伍</h3>
+      </div>
       <div class="create__gen">
         <button class="btn btn--primary" type="button" :disabled="selectedCount === 0" @click="generate">
           自动生成队伍
@@ -1081,6 +1177,17 @@ function save() {
                     @input="onColumnLimit(idx, 'healLimit', $event)"
                   />
                 </label>
+                <label title="该队输出总伤害下限：输出有效伤害合计需≥此值（0=不限）">
+                  <span>总伤≥</span>
+                  <input
+                    class="input res-limit-input"
+                    type="number"
+                    min="0"
+                    placeholder="0"
+                    :value="t.totalDamageLimit ?? 0"
+                    @input="onColumnLimit(idx, 'totalDamageLimit', $event)"
+                  />
+                </label>
                 <label title="该队至少放入的输出角色数">
                   <span>输出≥</span>
                   <input
@@ -1134,6 +1241,17 @@ function save() {
                   <span v-if="t.items.length" class="res-cell__stat">
                     C {{ teamPeople(wave, idx).dps }} · 奶 {{ teamPeople(wave, idx).support }}
                   </span>
+                  <span
+                    v-if="t.items.length && (t.totalDamageLimit ?? 0) > 0"
+                    class="res-cell__tot"
+                    :class="{
+                      'is-ok': totalDmgEff(t.items) >= (t.totalDamageLimit ?? 0),
+                      'is-low': totalDmgEff(t.items) < (t.totalDamageLimit ?? 0),
+                    }"
+                    title="该队输出总伤害（有效伤害合计）/目标"
+                  >
+                    总伤{{ fmtAmt(totalDmgEff(t.items)) }}/{{ t.totalDamageLimit }}
+                  </span>
                   <span v-if="t.items.length === 0" class="res-cell__empty-tip">空</span>
                   <span v-else-if="t.items.length < TEAM_SIZE" class="res-cell__warn">
                     未满 {{ t.items.length }}/4
@@ -1156,9 +1274,10 @@ function save() {
                     <span class="tag" :class="it.character.roleType === 'dps' ? 'tag--dps' : 'tag--support'">
                       {{ roleLabel(it.character.roleType) }}
                     </span>
+                    <span v-if="isCarHead(it)" class="tag tag--car">车头</span>
                     <span class="member-row__nick">{{ it.character.nickname }}</span>
                     <span class="member-row__meta"
-                      >{{ it.character.job }} · {{ statLabel(it.character.roleType) }} {{ it.character.score }}</span
+                      >{{ it.character.job }} · {{ statLabel(it.character.roleType) }} {{ fmtEffScore(it.character.job, it.character.score) }}</span
                     >
                   </li>
                   <li v-if="t.items.length === 0" class="team__empty">（空）可把成员拖到这里</li>
@@ -1186,9 +1305,10 @@ function save() {
               <span class="tag" :class="it.character.roleType === 'dps' ? 'tag--dps' : 'tag--support'">
                 {{ roleLabel(it.character.roleType) }}
               </span>
+              <span v-if="isCarHead(it)" class="tag tag--car">车头</span>
               {{ it.character.nickname }}
               <span class="bench__meta"
-                >{{ it.character.job }} · {{ statLabel(it.character.roleType) }} {{ it.character.score }}</span
+                >{{ it.character.job }} · {{ statLabel(it.character.roleType) }} {{ fmtEffScore(it.character.job, it.character.score) }}</span
               >
             </span>
             <span v-if="mergedBench.length === 0" class="bench__empty">
@@ -1931,7 +2051,7 @@ function save() {
 
 .res-hd__limits {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 4px 6px;
 }
 
@@ -1997,6 +2117,23 @@ function save() {
 
 .res-cell__stat {
   color: var(--app-text-secondary);
+}
+
+.res-cell__tot {
+  color: var(--app-text-secondary);
+  white-space: nowrap;
+}
+
+/* 达标：绿色 */
+.res-cell__tot.is-ok {
+  color: var(--app-success);
+  font-weight: 600;
+}
+
+/* 未达标：红色 */
+.res-cell__tot.is-low {
+  color: var(--app-danger);
+  font-weight: 600;
 }
 
 .res-cell__warn {

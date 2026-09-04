@@ -1,5 +1,5 @@
 import type { Character, Team } from "../types/schedule";
-import { uid } from "../types/schedule";
+import { effScore, uid } from "../types/schedule";
 
 /** 规则：每队默认 1 辅助 + 3 输出 */
 export const TEAM_SIZE = 4;
@@ -15,6 +15,8 @@ export interface DraftItem {
 export interface DraftLimit {
   damageLimit: number;
   healLimit: number;
+  /** 本队“总伤害”下限：队内输出有效伤害合计需 ≥ 此值（0=不限） */
+  totalDamageLimit?: number;
   /** 本队最少输出角色数（0=不要求） */
   minDps: number;
   /** 本队最少辅助角色数（0=不要求） */
@@ -34,6 +36,7 @@ export function emptyDraftsFromTemplate(
     name?: string
     damageLimit: number
     healLimit: number
+    totalDamageLimit?: number
     minDps?: number
     minSup?: number
   }[]
@@ -43,6 +46,7 @@ export function emptyDraftsFromTemplate(
     name: c.name || `${i + 1}队`,
     damageLimit: c.damageLimit || 0,
     healLimit: c.healLimit || 0,
+    totalDamageLimit: c.totalDamageLimit || 0,
     minDps: c.minDps ?? 0,
     minSup: c.minSup ?? 1,
     items: [],
@@ -75,10 +79,10 @@ export function assignByLimits(
   const out: TeamDraft[] = ordered.map(({ t }) => ({ ...t, items: [] }))
   const sup = pool
     .filter((p) => p.character.roleType === "support")
-    .sort((a, b) => b.character.score - a.character.score)
+    .sort((a, b) => effScore(b.character.job, b.character.score) - effScore(a.character.job, a.character.score))
   const dps = pool
     .filter((p) => p.character.roleType === "dps")
-    .sort((a, b) => b.character.score - a.character.score)
+    .sort((a, b) => effScore(b.character.job, b.character.score) - effScore(a.character.job, a.character.score))
 
   const roleCount = (items: DraftItem[], role: "dps" | "support") =>
     items.filter((x) => x.character.roleType === role).length
@@ -89,7 +93,7 @@ export function assignByLimits(
    */
   function take(list: DraftItem[], limit: number): DraftItem | null {
     if (!list.length) return null
-    let idx = list.findIndex((it) => limit <= 0 || it.character.score >= limit)
+    let idx = list.findIndex((it) => limit <= 0 || effScore(it.character.job, it.character.score) >= limit)
     if (idx < 0) idx = 0
     return list.splice(idx, 1)[0]
   }
@@ -114,21 +118,50 @@ export function assignByLimits(
       team.items.push(it)
     }
   }
-  // 阶段② 输出保底：红队 → 黄队 → …，先满足各队 minDps
-  for (const team of active) {
-    const minDps = team.minDps ?? 0
-    while (team.items.length < TEAM_SIZE && roleCount(team.items, "dps") < minDps && dps.length) {
-      const it = take(dps, team.damageLimit)
-      if (!it) break
-      team.items.push(it)
+  // 是否有队伍要求“总伤害下限”→ 启用“总伤均衡分配”
+  const dmgBalanced = active.some((t) => (t.totalDamageLimit ?? 0) > 0)
+  if (dmgBalanced) {
+    // —— 均衡模式：把最强输出“蛇形轮流”分给各队，避免高分全堆在首队——
+    // 每轮按“总伤害目标从高到低”决定谁先选（目标 0=不限 的队伍排最后当吸收池），
+    // 各队每轮各取当前池中一名最强，直到队伍满员或输出耗尽。
+    // 效果：顶级 C 均匀错开到各队，各队总伤既贴近各自目标又彼此均衡；
+    // 目标高的队伍因每轮先手会拿到略强的组合（与其更高的门槛一致）。
+    const priority = active
+      .map((t, i) => ({ t, i }))
+      .sort((a, b) => (b.t.totalDamageLimit ?? 0) - (a.t.totalDamageLimit ?? 0) || a.i - b.i)
+      .map((x) => x.t)
+    let guard = 0
+    while (dps.length && guard++ < priority.length * TEAM_SIZE) {
+      let placed = false
+      for (const team of priority) {
+        if (team.items.length >= TEAM_SIZE) continue
+        const outSeats = TEAM_SIZE - roleCount(team.items, "support")
+        if (roleCount(team.items, "dps") >= outSeats) continue
+        const it = take(dps, team.damageLimit)
+        if (!it) break
+        team.items.push(it)
+        placed = true
+      }
+      if (!placed) break
     }
-  }
-  // 阶段③ 输出补满到 4 人（仅输出，宁缺不补辅助）
-  for (const team of active) {
-    while (team.items.length < TEAM_SIZE && dps.length) {
-      const it = take(dps, team.damageLimit)
-      if (!it) break
-      team.items.push(it)
+  } else {
+    // 原逻辑（没有队伍设总伤害目标时保持既有行为）
+    // 阶段② 输出保底：红队 → 黄队 → …，先满足各队 minDps
+    for (const team of active) {
+      const minDps = team.minDps ?? 0
+      while (team.items.length < TEAM_SIZE && roleCount(team.items, "dps") < minDps && dps.length) {
+        const it = take(dps, team.damageLimit)
+        if (!it) break
+        team.items.push(it)
+      }
+    }
+    // 阶段③ 输出补满到 4 人（仅输出，宁缺不补辅助）
+    for (const team of active) {
+      while (team.items.length < TEAM_SIZE && dps.length) {
+        const it = take(dps, team.damageLimit)
+        if (!it) break
+        team.items.push(it)
+      }
     }
   }
   // 宁缺兜底：非首队若最终仍凑不满一整队（输出不足导致只拿到辅助/少数输出），整队退回替补，避免碎队
@@ -152,6 +185,7 @@ export function toScheduleTeams(drafts: TeamDraft[]): Team[] {
     name: d.name,
     damageLimit: d.damageLimit,
     healLimit: d.healLimit,
+    totalDamageLimit: d.totalDamageLimit || 0,
     minDps: d.minDps,
     minSup: d.minSup,
     members: d.items.map((it) => {
@@ -177,6 +211,14 @@ export function teamCounts(items: DraftItem[]) {
   };
 }
 
+/** 队伍内输出的“有效伤害合计”（总伤害下限校验用，与展示/比较同口径） */
+export function totalDmgEff(items: DraftItem[]): number {
+  return items.reduce(
+    (s, it) => (it.character.roleType === "dps" ? s + effScore(it.character.job, it.character.score) : s),
+    0,
+  );
+}
+
 /**
  * 拆班：**先按模板容量定“计划班数”，再按班填充（每班配足该班可组队伍所需的辅助）**。
  * - 计划班数 = ⌈总角色 / perWave⌉（纯按“模板参与人数上限”，不因成员数/奶等规则而增加）；
@@ -190,11 +232,17 @@ export function teamCounts(items: DraftItem[]) {
 export function splitRounds(
   items: DraftItem[],
   perWave: number,
+  carHeader = 0,
+  balance = false,
 ): { waves: DraftItem[][]; bench: DraftItem[] } {
   if (!items.length || perWave <= 0) return { waves: [], bench: [] }
   if (items.length === 1) return { waves: [items], bench: [] }
 
   const isSup = (i: DraftItem) => i.character.roleType === "support"
+  /** 车头：达到“车头伤害限制”的输出（每班尽量只放 1 个，避免大C扎堆同班） */
+  const isCar = (i: DraftItem) =>
+    carHeader > 0 && !isSup(i) && effScore(i.character.job, i.character.score) >= carHeader
+  const effOf = (i: DraftItem) => effScore(i.character.job, i.character.score)
   const memberCount = new Set(items.map((i) => i.memberId)).size
   // 计划班数：纯按模板容量（不考虑成员/奶等规则）
   const targetW = Math.max(1, Math.ceil(items.length / perWave))
@@ -204,7 +252,11 @@ export function splitRounds(
   const supPerWave = Math.max(1, Math.floor(seat / TEAM_SIZE))
 
   const remSup = items.filter(isSup)
-  const remDps = items.filter((i) => !isSup(i))
+  // 车头池按有效伤害降序：第 1 班先拿全局最高，第 2 班次高 …（保证各班都有最强C）
+  const carPool = items.filter(isCar).sort((a, b) => effOf(b) - effOf(a))
+  // 普通输出（未达车头限制）
+  const remDps = items.filter((i) => !isSup(i) && !isCar(i))
+  if (balance) remDps.sort((a, b) => effOf(b) - effOf(a))
 
   /** 从列表中取第一个“成员尚未在本班出现”的角色（保持原顺序，确保每班各成员至多 1 号） */
   const takeDistinct = (arr: DraftItem[], members: Set<string>): DraftItem | null => {
@@ -213,36 +265,119 @@ export function splitRounds(
     return arr.splice(i, 1)[0]
   }
 
+  if (!balance) {
+    // —— 原分班逻辑（保持既有行为）——
+    const waves: DraftItem[][] = []
+    for (let w = 0; w < targetW; w++) {
+      const wave: DraftItem[] = []
+      const members = new Set<string>()
+      // ① 辅助先行：每班先放 supPerWave 个辅助（来自不同成员）
+      while (wave.length < seat && wave.length < supPerWave) {
+        const s = takeDistinct(remSup, members)
+        if (!s) break
+        wave.push(s)
+        members.add(s.memberId)
+      }
+      // ①.5 车头：每班放至多 1 个“剩余最强”车头
+      {
+        const car = takeDistinct(carPool, members)
+        if (car && wave.length < seat) {
+          wave.push(car)
+          members.add(car.memberId)
+        }
+      }
+      // ② 用普通输出把班补满（每班各成员至多 1 号）
+      while (wave.length < seat) {
+        const d = takeDistinct(remDps, members)
+        if (!d) break
+        wave.push(d)
+        members.add(d.memberId)
+      }
+      // ③ 输出不足以满员时，可用多余辅助补位（减少无谓替补）
+      while (wave.length < seat) {
+        const s = takeDistinct(remSup, members)
+        if (!s) break
+        wave.push(s)
+        members.add(s.memberId)
+      }
+      if (!wave.length) break
+      waves.push(wave)
+    }
+    // 计划班数用尽后仍未放下的角色 → 替补区（未用完的车头排前，留给缺车头的班/手动）
+    const bench = [...remSup, ...carPool, ...remDps]
+    return { waves, bench }
+  }
+
+  // —— 跨班均衡模式（balance=true）——
+  // 建班并预放“辅助 + 每班 1 车头”
   const waves: DraftItem[][] = []
+  const waveMembers: Set<string>[] = []
+  const totals: number[] = []
   for (let w = 0; w < targetW; w++) {
     const wave: DraftItem[] = []
     const members = new Set<string>()
-    // ① 辅助先行：每班先放 supPerWave 个辅助（来自不同成员）
     while (wave.length < seat && wave.length < supPerWave) {
       const s = takeDistinct(remSup, members)
       if (!s) break
       wave.push(s)
       members.add(s.memberId)
     }
-    // ② 用输出把班补满（每班各成员至多 1 号）
-    while (wave.length < seat) {
-      const d = takeDistinct(remDps, members)
-      if (!d) break
-      wave.push(d)
-      members.add(d.memberId)
+    {
+      const car = takeDistinct(carPool, members)
+      if (car && wave.length < seat) {
+        wave.push(car)
+        members.add(car.memberId)
+      }
     }
-    // ③ 输出不足以满员时，可用多余辅助补位（减少无谓替补）
+    waves.push(wave)
+    waveMembers.push(members)
+    totals.push(totalDmgEff(wave))
+  }
+  // 最空优先：从“最强普通输出”起，逐个放进“累计总伤最低且还能再坐”的班
+  // → 各班获得的中强输出数量/伤害趋于平均，各班（红队）总伤不再两极分化
+  let i = 0
+  while (i < remDps.length) {
+    let hasRoom = false
+    for (let w = 0; w < waves.length; w++) {
+      if (waves[w].length < seat) {
+        hasRoom = true
+        break
+      }
+    }
+    if (!hasRoom) break
+    const it = remDps[i]
+    let best = -1
+    let bestTot = Infinity
+    for (let w = 0; w < waves.length; w++) {
+      const wave = waves[w]
+      if (wave.length >= seat) continue
+      if (waveMembers[w].has(it.memberId)) continue
+      if (totals[w] < bestTot) {
+        bestTot = totals[w]
+        best = w
+      }
+    }
+    if (best < 0) {
+      i++ // 该角色与所有未满班同人冲突 → 留替补
+      continue
+    }
+    waves[best].push(it)
+    waveMembers[best].add(it.memberId)
+    totals[best] += effOf(it)
+    remDps.splice(i, 1)
+  }
+  // 末尾：仍未满的班用多余辅助补位（减少无谓替补）
+  for (let w = 0; w < waves.length; w++) {
+    const wave = waves[w]
+    const members = waveMembers[w]
     while (wave.length < seat) {
       const s = takeDistinct(remSup, members)
       if (!s) break
       wave.push(s)
       members.add(s.memberId)
     }
-    if (!wave.length) break
-    waves.push(wave)
   }
-  // 计划班数用尽后仍未放下的角色 → 替补区
-  const bench = [...remSup, ...remDps]
+  const bench = [...remSup, ...carPool, ...remDps]
   return { waves, bench }
 }
 
