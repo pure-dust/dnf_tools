@@ -23,6 +23,10 @@ interface Row extends TeamLike {
   name: string;
   damageLimit: number;
   healLimit: number;
+  /** 最少输出角色数 */
+  minDps: number;
+  /** 最少辅助角色数 */
+  minSup: number;
 }
 
 const dialog = ref(false);
@@ -58,6 +62,8 @@ function openEdit(t: Template) {
     name: c.name,
     damageLimit: c.damageLimit,
     healLimit: c.healLimit,
+    minDps: c.minDps ?? 0,
+    minSup: c.minSup ?? 1,
   }));
 }
 
@@ -67,6 +73,8 @@ function addRow() {
     name: `${draft.teams.length + 1}队`,
     damageLimit: 0,
     healLimit: 0,
+    minDps: 0,
+    minSup: 1,
   });
 }
 function removeRow(i: number) {
@@ -83,6 +91,8 @@ function submit() {
     name: t.name || "队",
     damageLimit: t.damageLimit || 0,
     healLimit: t.healLimit || 0,
+    minDps: t.minDps ?? 0,
+    minSup: t.minSup ?? 1,
   }));
   if (editingId.value) {
     const cur = store.data.templates.find((t) => t.id === editingId.value);
@@ -120,15 +130,18 @@ function remove(t: Template) {
           <h3 class="tpl__name">{{ t.name }}</h3>
           <p class="tpl__meta">参与人数上限 {{ t.maxMembers }} · {{ t.teams.length }} 个队伍</p>
           <div class="tpl__teams">
-            <span
-              v-for="c in colored(t.teams)"
-              :key="c.team.id"
-              class="tpl__team"
-              :style="{ '--tpl-c': c.color }"
-            >
-              <span class="tpl__dot"></span>
-              {{ c.team.name }} · 伤害{{ c.team.damageLimit + "千亿" || "不限" }} · 奶量{{ c.team.healLimit || "不限" }}
-            </span>
+              <span
+                v-for="c in colored(t.teams)"
+                :key="c.team.id"
+                class="tpl__team"
+                :style="{ '--tpl-c': c.color }"
+              >
+                <span class="tpl__dot"></span>
+                {{ c.team.name }} · 伤害{{ c.team.damageLimit + "千亿" || "不限" }} · 奶量{{ c.team.healLimit || "不限" }}
+                <template v-if="(c.team.minDps ?? 0) > 0 || (c.team.minSup ?? 0) > 0">
+                  · 出≥{{ c.team.minDps ?? 0 }} 辅≥{{ c.team.minSup ?? 0 }}
+                </template>
+              </span>
           </div>
         </div>
         <div class="tpl__ops">
@@ -170,6 +183,14 @@ function remove(t: Template) {
               <label>
                 奶量门槛
                 <input v-model.number="row.healLimit" class="input" type="number" min="0" placeholder="0=不限" />
+              </label>
+              <label title="该队至少放入的输出角色数">
+                输出≥
+                <input v-model.number="row.minDps" class="input tpl-editor__num" type="number" min="0" placeholder="0" />
+              </label>
+              <label title="该队至少放入的辅助角色数">
+                辅助≥
+                <input v-model.number="row.minSup" class="input tpl-editor__num" type="number" min="0" placeholder="1" />
               </label>
             </div>
             <button class="btn btn--sm btn--danger" type="button" :disabled="draft.teams.length <= 1" @click="removeRow(i)">
@@ -298,7 +319,6 @@ function remove(t: Template) {
       border: 1px solid var(--app-border);
       border-radius: 8px;
     }
-
     &__dot {
       width: 14px;
       height: 14px;

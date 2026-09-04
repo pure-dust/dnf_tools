@@ -48,6 +48,10 @@ export interface Team {
   damageLimit: number;
   /** 本队辅助奶量门槛（0=不限） */
   healLimit: number;
+  /** 本队最少输出角色数（0=不要求） */
+  minDps?: number;
+  /** 本队最少辅助角色数（0=不要求） */
+  minSup?: number;
 }
 
 export interface Schedule {
@@ -84,6 +88,10 @@ export interface TemplateTeam {
   damageLimit: number;
   /** 该队辅助奶量门槛（0=不限） */
   healLimit: number;
+  /** 该队最少输出角色数（0=不要求） */
+  minDps?: number;
+  /** 该队最少辅助角色数（0=不要求） */
+  minSup?: number;
 }
 
 /** 排班模板：规定参与人数 + 每个队伍各自的伤害/奶量限制 */

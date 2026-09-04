@@ -85,6 +85,8 @@ async function loadForEdit(groupKey: string) {
       name: team.name,
       damageLimit: team.damageLimit || 0,
       healLimit: team.healLimit || 0,
+      minDps: team.minDps ?? 0,
+      minSup: team.minSup ?? 1,
       items: (team.members ?? []).map((slot) => {
         const it: DraftItem = {
           memberId: slot.memberId,
@@ -879,6 +881,26 @@ function save() {
                         type="number"
                         min="0"
                         placeholder="0=不限"
+                      />
+                    </label>
+                    <label title="该队至少放入的输出角色数（满足配额后空位仍优先输出）">
+                      输出≥
+                      <input
+                        v-model.number="t.minDps"
+                        class="input team__limit-input"
+                        type="number"
+                        min="0"
+                        placeholder="0"
+                      />
+                    </label>
+                    <label title="该队至少放入的辅助角色数">
+                      辅助≥
+                      <input
+                        v-model.number="t.minSup"
+                        class="input team__limit-input"
+                        type="number"
+                        min="0"
+                        placeholder="1"
                       />
                     </label>
                   </div>
