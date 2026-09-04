@@ -358,10 +358,24 @@ const hasGenerated = ref(false)
 /** 编辑历史“整组”时的原组 key；保存时覆盖该组旧记录 */
 const editingGroupKey = ref<string | null>(null)
 
+/** 已锁定的队伍列（列索引，0=首列“红队”…）：这些列的角色冻结，不再参与自动排班/拖拽调整 */
+const lockedCols = ref<number[]>([])
+
+function isColLocked(idx: number): boolean {
+  return lockedCols.value.includes(idx)
+}
+
+function toggleColLock(idx: number) {
+  lockedCols.value = isColLocked(idx)
+    ? lockedCols.value.filter((x) => x !== idx)
+    : [...lockedCols.value, idx].sort((a, b) => a - b)
+}
+
 function resetResult() {
   waves.value = []
   mergedBench.value = []
   hasGenerated.value = false
+  lockedCols.value = []
 }
 
 /** 是否低于模板的“最低伤害/最低奶量”限制（此类角色不参与自动排班，只能手动拖） */
@@ -417,6 +431,11 @@ function generate() {
   }
   const items = selectedItems()
   if (!items.length) return
+  // 已有排班且存在“锁定列”时：只重排未锁定列，锁定列保持不变
+  if (hasGenerated.value && waves.value.length && lockedCols.value.length) {
+    refillFreeCols()
+    return
+  }
   const cap = Math.min(Math.max(templateMax.value || 1, 1), 20)
   // 低于“最低伤害/最低奶量”门槛的角色不参与自动排班，仅放入替补区供手动拖
   const auto = items.filter((i) => !isBelowMin(i))
@@ -450,6 +469,174 @@ function generate() {
   hasGenerated.value = true
   // 生成后内置“多次插入”：按生成逻辑（启用空队、先辅后出、每队≤4、同人每班1号）反复补，直到无法再插入
   insertBenchToTeams()
+}
+
+/**
+ * 已有排班且存在“锁定列”时的再生成：
+ * 保留全部波次与锁定列的角色；把未锁定列的角色（连同替补）放回候选池，
+ * 按与首次生成相同的精神（先辅后出、就近门槛；模板设了“总伤下限”则蛇形均衡）重新填入未锁定列。
+ * 锁定列的角色/成员全程冻结、不参与任何分配。
+ */
+function refillFreeCols() {
+  if (!template.value || !waves.value.length) return
+  const lockedSet = new Set(lockedCols.value)
+  const nCols = waves.value[0].teams.length
+  const freeIdx: number[] = []
+  for (let i = 0; i < nCols; i++) if (!lockedSet.has(i)) freeIdx.push(i)
+  if (!freeIdx.length) {
+    alert("所有队伍列都已锁定，没有可自动排班的列。请先解锁至少一列。")
+    return
+  }
+  const W = waves.value.length
+  const effOf = (i: DraftItem) => effScore(i.character.job, i.character.score)
+  const isSup = (i: DraftItem) => i.character.roleType === "support"
+  const isDps = (i: DraftItem) => !isSup(i)
+  const supCnt = (items: DraftItem[]) => items.filter(isSup).length
+
+  // ① 锁定占用：角色 id 全局排除；每波锁定成员禁止再进入该波
+  const lockedCharIds = new Set<string>()
+  const waveLocked: Set<string>[] = waves.value.map(() => new Set())
+  waves.value.forEach((w, wi) => {
+    w.teams.forEach((t, idx) => {
+      if (!lockedSet.has(idx)) return
+      t.items.forEach((it) => {
+        lockedCharIds.add(it.character.id)
+        waveLocked[wi].add(it.memberId)
+      })
+    })
+  })
+
+  // ② 候选池 = 已选 − 锁定占用；低门槛角色直接留在替补
+  const cand = selectedItems().filter((i) => !lockedCharIds.has(i.character.id))
+  const low = cand.filter((i) => isBelowMin(i))
+  const auto = cand.filter((i) => !isBelowMin(i))
+  const supPool = auto.filter(isSup).sort((a, b) => effOf(b) - effOf(a))
+  const dpsPool = auto.filter(isDps).sort((a, b) => effOf(b) - effOf(a))
+
+  // ③ 清空未锁定列（锁定列原样保留）
+  waves.value.forEach((w) => {
+    w.teams.forEach((t, idx) => {
+      if (!lockedSet.has(idx)) t.items = []
+    })
+  })
+
+  const seat = freeIdx.length * TEAM_SIZE // 每波自由座位数
+  const supNeeded = freeIdx.reduce((s, idx) => s + (waves.value[0].teams[idx].minSup ?? 1), 0)
+  // 每波“已占用伤害”基线（锁定列冻结部分），用于跨波均衡
+  const waveTot = waves.value.map((w) => {
+    let t = 0
+    w.teams.forEach((team, idx) => {
+      if (lockedSet.has(idx)) t += totalDmgEff(team.items)
+    })
+    return t
+  })
+
+  // ④ 逐波分桶（成员互异）：先按波补足辅助 → 输出从强到弱放入“总伤最低且有座位”的波
+  const buckets: DraftItem[][] = waves.value.map(() => [])
+  const memUsed: Set<string>[] = waves.value.map((_, wi) => new Set(waveLocked[wi]))
+  const hasRoom = (wi: number) => buckets[wi].length < seat
+  for (let wi = 0; wi < W; wi++) {
+    let got = 0
+    while (got < supNeeded) {
+      const j = supPool.findIndex((it) => !memUsed[wi].has(it.memberId))
+      if (j < 0) break
+      const it = supPool.splice(j, 1)[0]
+      buckets[wi].push(it)
+      memUsed[wi].add(it.memberId)
+      waveTot[wi] += effOf(it)
+      got++
+    }
+  }
+  let i = 0
+  while (i < dpsPool.length) {
+    let anyRoom = false
+    for (let wi = 0; wi < W; wi++) if (hasRoom(wi)) { anyRoom = true; break }
+    if (!anyRoom) break
+    const it = dpsPool[i]
+    let best = -1
+    let bestTot = Infinity
+    for (let wi = 0; wi < W; wi++) {
+      if (!hasRoom(wi)) continue
+      if (memUsed[wi].has(it.memberId)) continue
+      if (waveTot[wi] < bestTot) {
+        bestTot = waveTot[wi]
+        best = wi
+      }
+    }
+    if (best < 0) {
+      i++
+      continue
+    }
+    buckets[best].push(it)
+    memUsed[best].add(it.memberId)
+    waveTot[best] += effOf(it)
+    dpsPool.splice(i, 1)
+  }
+
+  // ⑤ 每波把分桶按“相同生成逻辑”填回其自由列（先辅后出、就近门槛；有“总伤下限”则蛇形均衡）
+  const overflow: DraftItem[] = []
+  waves.value.forEach((w, wi) => {
+    const pool = buckets[wi].slice()
+    const used = new Set(waveLocked[wi])
+    const freeTeams = freeIdx
+      .map((idx) => w.teams[idx])
+      .sort((a, b) => (b.damageLimit || 0) - (a.damageLimit || 0))
+    const take = (arr: DraftItem[], limit: number): DraftItem | null => {
+      let j = arr.findIndex((x) => !used.has(x.memberId) && (limit <= 0 || effOf(x) >= limit))
+      if (j < 0) j = arr.findIndex((x) => !used.has(x.memberId))
+      if (j < 0) return null
+      const it = arr.splice(j, 1)[0]
+      used.add(it.memberId)
+      return it
+    }
+    const supA = pool.filter(isSup).sort((a, b) => effOf(b) - effOf(a))
+    const dpsA = pool.filter(isDps).sort((a, b) => effOf(b) - effOf(a))
+    // 先补辅助（各自由队 minSup）
+    for (const team of freeTeams) {
+      const minSup = team.minSup ?? 1
+      while (team.items.length < TEAM_SIZE && supCnt(team.items) < minSup) {
+        const it = take(supA, team.healLimit ?? 0)
+        if (!it) break
+        team.items.push(it)
+      }
+    }
+    // 再补输出到 4
+    const anyTot = freeTeams.some((t) => (t.totalDamageLimit ?? 0) > 0)
+    if (anyTot) {
+      const prio = [...freeTeams].sort(
+        (a, b) => (b.totalDamageLimit ?? 0) - (a.totalDamageLimit ?? 0),
+      )
+      let guard = 0
+      while (dpsA.length && guard++ < prio.length * TEAM_SIZE) {
+        let placed = false
+        for (const team of prio) {
+          if (team.items.length >= TEAM_SIZE) continue
+          const dpsSeats = TEAM_SIZE - supCnt(team.items)
+          if (team.items.filter(isDps).length >= dpsSeats) continue
+          const it = take(dpsA, team.damageLimit ?? 0)
+          if (!it) break
+          team.items.push(it)
+          placed = true
+        }
+        if (!placed) break
+      }
+    } else {
+      for (const team of freeTeams) {
+        while (team.items.length < TEAM_SIZE) {
+          const it = take(dpsA, team.damageLimit ?? 0)
+          if (!it) break
+          team.items.push(it)
+        }
+      }
+    }
+    overflow.push(...supA, ...dpsA)
+  })
+  // 同步每波 pool（显示与后续“重排本波”以实际占用为准）
+  waves.value.forEach((w) => {
+    w.pool = w.teams.flatMap((t) => t.items)
+  })
+
+  mergedBench.value = [...supPool, ...dpsPool, ...overflow, ...low]
 }
 
 /* ---------------- 替补插入（生成内置 + 自动补位） ---------------- */
@@ -490,11 +677,12 @@ function insertBenchToTeams() {
   while (changed && guard++ < 100) {
     changed = false
     for (const wave of waves.value) {
-      for (const team of wave.teams) {
+      wave.teams.forEach((team, idx) => {
+        if (lockedCols.value.includes(idx)) return // 锁定列不自动补位
         const before = team.items.length
         fillTeamFromBench(wave, team)
         if (team.items.length > before) changed = true
-      }
+      })
     }
   }
 }
@@ -515,7 +703,9 @@ function autoFillBench() {
     for (const wave of waves.value) {
       if (hasSameMemberInWave(wave, item)) continue // 同班不可重复同一成员
       if (isCarHead(item) && waveHasCar(wave)) continue // 车头不放进已有车头的班
-      const team = wave.teams.find((t) => t.items.length < TEAM_SIZE)
+      const team = wave.teams.find(
+        (t, i) => !lockedCols.value.includes(i) && t.items.length < TEAM_SIZE,
+      ) // 跳过锁定列
       if (team) {
         team.items.push(item)
         placed = true
@@ -562,13 +752,60 @@ function onColumnLimit(
   })
 }
 
-/** 按某波门槛重新分配（该波此前手动放入替补的人会重新参与分配并从替补移除） */
+/** 按某波门槛重新分配（该波此前手动放入替补的人会重新参与分配并从替补移除）；锁定列保持不变 */
 function reassignWave(wave: Wave) {
-  const poolIds = new Set(wave.pool.map((p) => p.character.id))
-  mergedBench.value = mergedBench.value.filter((x) => !poolIds.has(x.character.id))
-  const res = assignByLimits(wave.teams, wave.pool)
-  wave.teams = res.teams
-  mergedBench.value.push(...res.bench)
+  const lockedIdx = wave.teams.map((_, i) => i).filter((i) => isColLocked(i))
+  // 无锁定列：维持原有整波重排
+  if (!lockedIdx.length) {
+    const poolIds = new Set(wave.pool.map((p) => p.character.id))
+    mergedBench.value = mergedBench.value.filter((x) => !poolIds.has(x.character.id))
+    const res = assignByLimits(wave.teams, wave.pool)
+    wave.teams = res.teams
+    mergedBench.value.push(...res.bench)
+    return
+  }
+  const lockedSet = new Set(lockedIdx)
+  // 本波锁定列占用（角色与成员）冻结
+  const lockedCharIds = new Set<string>()
+  const lockedMembers = new Set<string>()
+  wave.teams.forEach((t, idx) => {
+    if (!lockedSet.has(idx)) return
+    t.items.forEach((it) => {
+      lockedCharIds.add(it.character.id)
+      lockedMembers.add(it.memberId)
+    })
+  })
+  const freeIdx = wave.teams.map((_, i) => i).filter((i) => !lockedSet.has(i))
+  // 参与分配的池：本波 pool + 原自由列现有角色（去掉锁定占用 / 锁定成员的其余角色）
+  const seen = new Set<string>()
+  const usePool: DraftItem[] = []
+  const push = (it: DraftItem) => {
+    if (lockedCharIds.has(it.character.id)) return
+    if (lockedMembers.has(it.memberId)) return
+    if (seen.has(it.character.id)) return
+    seen.add(it.character.id)
+    usePool.push(it)
+  }
+  wave.pool.forEach(push)
+  freeIdx.forEach((idx) => wave.teams[idx].items.forEach(push))
+  // 收回本波此前分到替补的角色（锁定的除外）
+  mergedBench.value = mergedBench.value.filter(
+    (x) =>
+      !(
+        wave.pool.some((p) => p.character.id === x.character.id) &&
+        !lockedCharIds.has(x.character.id) &&
+        !lockedMembers.has(x.memberId)
+      ),
+  )
+  const freeDrafts = freeIdx.map((idx) => ({ ...wave.teams[idx], items: [] }))
+  const res = assignByLimits(freeDrafts, usePool)
+  wave.teams.forEach((t, idx) => {
+    if (!lockedSet.has(idx)) {
+      const f = res.teams.find((r) => r.id === t.id)
+      t.items = f ? f.items : []
+    }
+  })
+  mergedBench.value.push(...res.bench.filter((b) => !seen.has(b.character.id)))
 }
 
 /* ---------- 波次/队伍显示 ---------- */
@@ -634,6 +871,7 @@ function hasSameMemberInWave(wave: Wave, item: DraftItem) {
 
 /** 拖拽来源 → “整支队伍（空白/整队）”是否可放：直接放 / 同波移动 / 跨波交换。与 dropOnTeam 判定一致 */
 function canDropTeam(s: DragSource, wave: Wave, teamIdx: number): boolean {
+  if (lockedCols.value.includes(teamIdx)) return false // 锁定列不可放
   const team = wave.teams[teamIdx]
   if (!team) return false
   if (s.kind === "bench") {
@@ -649,6 +887,7 @@ function canDropTeam(s: DragSource, wave: Wave, teamIdx: number): boolean {
 
 /** 拖拽来源 → “某个成员槽位”是否可放：排序 / 换号替换 / 交换。与 dropOnMember 判定一致 */
 function canDropMember(s: DragSource, wave: Wave, teamIdx: number, memberIdx: number): boolean {
+  if (lockedCols.value.includes(teamIdx)) return false // 锁定列不可放
   const targetItems = wave.teams[teamIdx]?.items
   const targ = targetItems?.[memberIdx]
   if (!targ) return false
@@ -690,6 +929,10 @@ function dropOnMember(ev: DropLike, wave: Wave, teamIdx: number, targetIdx: numb
   hoverMark.value = ""
   if (!s) {
     endDrag()
+    return
+  }
+  if (lockedCols.value.includes(teamIdx)) {
+    endDrag() // 锁定列不可放入/交换
     return
   }
   const targetItems = wave.teams[teamIdx].items
@@ -788,6 +1031,10 @@ function dropOnTeam(ev: DropLike, wave: Wave, teamIdx: number) {
   hoverMark.value = ""
   if (!s) {
     endDrag()
+    return
+  }
+  if (lockedCols.value.includes(teamIdx)) {
+    endDrag() // 锁定列不可放入/交换
     return
   }
   const team = wave.teams[teamIdx]
@@ -1078,6 +1325,7 @@ function beginDrag(ev: EvLike, src: DragSource, captureEl?: HTMLElement | null) 
 }
 
 function pdMember(ev: PointerEvent | MouseEvent, wave: Wave, teamIdx: number, item: DraftItem) {
+  if (lockedCols.value.includes(teamIdx)) return // 锁定列不可拖出
   beginDrag(ev, { wave, kind: "team", teamIdx, item }, ev.currentTarget as HTMLElement | null)
 }
 
@@ -1350,6 +1598,9 @@ function save() {
         <div class="res-scroll">
           <p class="create__hint">
             每列一支队伍（列头可改门槛/配额，作用于所有波次的该队）；每行一个波次。拖拽成员可队内调整、同波跨队交换，或拖到右侧“替补区域”移出该波。
+            <template v-if="lockedCols.length">
+              <b>已锁定 {{ lockedCols.length }} 列</b>（{{ lockedCols.map((i) => baseTeams()[i]?.name).filter(Boolean).join("、") }}）：再次「自动生成队伍」只重排未锁定列。
+            </template>
           </p>
           <div class="res-grid" :style="{ gridTemplateColumns: resGridCols() }">
             <!-- 表头：波次列 + 每队一列（门槛/配额在列头统一编辑） -->
@@ -1362,6 +1613,19 @@ function save() {
             >
               <div class="res-hd__name">
                 <i class="team__dot"></i><b>{{ t.name }}</b>
+                <button
+                  type="button"
+                  class="col-lock"
+                  :class="{ 'is-on': isColLocked(idx) }"
+                  :title="
+                    isColLocked(idx)
+                      ? '已锁定：该颜色列的角色全部冻结，不再参与自动排班/手动调整（点击解锁）'
+                      : '锁定该颜色列：所有波次该队角色固定，点击自动生成时只重排其余列'
+                  "
+                  @click="toggleColLock(idx)"
+                >
+                  {{ isColLocked(idx) ? "🔒" : "🔓" }}
+                </button>
               </div>
               <div class="res-hd__limits">
                 <label title="伤害门槛（0=不限）">
@@ -1372,6 +1636,7 @@ function save() {
                     min="0"
                     placeholder="0"
                     :value="t.damageLimit ?? 0"
+                    :disabled="isColLocked(idx)"
                     @input="onColumnLimit(idx, 'damageLimit', $event)"
                   />
                 </label>
@@ -1383,6 +1648,7 @@ function save() {
                     min="0"
                     placeholder="0"
                     :value="t.healLimit ?? 0"
+                    :disabled="isColLocked(idx)"
                     @input="onColumnLimit(idx, 'healLimit', $event)"
                   />
                 </label>
@@ -1394,6 +1660,7 @@ function save() {
                     min="0"
                     placeholder="0"
                     :value="t.totalDamageLimit ?? 0"
+                    :disabled="isColLocked(idx)"
                     @input="onColumnLimit(idx, 'totalDamageLimit', $event)"
                   />
                 </label>
@@ -1405,6 +1672,7 @@ function save() {
                     min="0"
                     placeholder="0"
                     :value="t.minDps ?? 0"
+                    :disabled="isColLocked(idx)"
                     @input="onColumnLimit(idx, 'minDps', $event)"
                   />
                 </label>
@@ -1416,6 +1684,7 @@ function save() {
                     min="0"
                     placeholder="1"
                     :value="t.minSup ?? 1"
+                    :disabled="isColLocked(idx)"
                     @input="onColumnLimit(idx, 'minSup', $event)"
                   />
                 </label>
@@ -1445,6 +1714,7 @@ function save() {
                 :data-ti="idx"
                 :class="{
                   'is-empty': t.items.length === 0,
+                  'is-locked': isColLocked(idx),
                   'dnd-can': dropOk[wi + ':' + idx] === true,
                   'dnd-no': dropOk[wi + ':' + idx] === false,
                 }"
@@ -2312,6 +2582,40 @@ function save() {
   }
 }
 
+/* 列锁定按钮（🔒 锁定 / 🔓 未锁） */
+.res-hd__name .col-lock {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: none;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--app-text-secondary);
+  opacity: 0.7;
+  transition: opacity 0.12s;
+}
+
+.res-hd__name .col-lock:hover {
+  opacity: 1;
+}
+
+.res-hd__name .col-lock.is-on {
+  color: #8a6d00;
+  border-color: color-mix(in srgb, #f0b400 55%, transparent);
+  background-color: color-mix(in srgb, #f0b400 15%, transparent);
+  opacity: 1;
+}
+
+.res-hd__name .col-lock.is-on + .res-hd__limits .res-limit-input:disabled {
+  opacity: 0.6;
+}
+
 .res-hd__limits {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -2381,6 +2685,25 @@ function save() {
     outline-offset: -2px;
     background-color: color-mix(in srgb, var(--app-danger) 6%, transparent);
   }
+}
+
+/* 锁定列：冻结标识（淡斜纹 + 右上小锁角标） */
+.res-cell.is-locked {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, #f0b400 5%, transparent) 0 6px,
+    transparent 6px 12px
+  );
+}
+
+.res-cell.is-locked::after {
+  content: "🔒";
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: 10px;
+  opacity: 0.55;
+  pointer-events: none;
 }
 
 .res-cell__head {
