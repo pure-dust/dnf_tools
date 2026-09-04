@@ -1187,7 +1187,9 @@ function save() {
                 {{ roleLabel(it.character.roleType) }}
               </span>
               {{ it.character.nickname }}
-              <span class="bench__meta">{{ it.character.job }}</span>
+              <span class="bench__meta"
+                >{{ it.character.job }} · {{ statLabel(it.character.roleType) }} {{ it.character.score }}</span
+              >
             </span>
             <span v-if="mergedBench.length === 0" class="bench__empty">
               暂无替补 —— 把任一波的成员拖到这里即可设为替补
