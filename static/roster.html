@@ -655,11 +655,9 @@
                 '    <div class="fld"><small>角色昵称' +
                 (c.nickname.trim() ? "" : "（必填）") +
                 "</small>" +
-                '      <input type="text" placeholder="如：小明-红眼" value="' +
+                '      <input type="text" disabled placeholder="如：小明-红眼" value="' +
                 esc(c.nickname) +
-                '" data-f="nick" class="' +
-                (badC && !c.nickname.trim() ? "invalid" : "") +
-                '"></div>' +
+                '" data-f="nick" class=""></div>' +
                 '    <div class="fld"><small>定位</small>' +
                 '      <select data-f="roleType">' +
                 '        <option value="dps"' +
@@ -727,11 +725,18 @@
           var ci = Number(el.closest(".char-row").dataset.ci)
           var c = members[mi].chars[ci]
           if (f === "nick") c.nickname = el.value
-          else if (f === "job") c.job = el.value
-          else if (f === "fame") c.fame = el.value
+          else if (f === "job") {
+            c.nickname = members[mi].nickname + "-" + el.value || ""
+            c.job = el.value
+          } else if (f === "fame") c.fame = el.value
           else if (f === "score") c.score = el.value
         } else {
-          if (f === "nick") members[mi].nickname = el.value
+          if (f === "nick") {
+            members[mi].nickname = el.value
+            members[mi].chars.forEach(function (c) {
+              c.nickname = el.value + "-" + c.job || ""
+            })
+          }
         }
         scheduleDraft()
       })
