@@ -614,7 +614,34 @@
         return JOB_SUG
       } // 单列表供 datalist
 
+      /* 角色名 = 成员昵称-职业；仅当该成员同职业角色有多个（≥2）时，从第 1 个起加序号
+         （…红眼1、红眼2、红眼3）；只有一个则不加号（小明-红眼）。
+         统一在这里生成，保证新增/删除/改名后编号一致。 */
+      function charAutoName(m, ci) {
+        var job = (m.chars[ci].job || "").trim()
+        if (!job) return ""
+        var total = 0
+        var occ = 0
+        for (var k = 0; k < m.chars.length; k++) {
+          if ((m.chars[k].job || "").trim() === job) {
+            total++
+            if (k <= ci) occ++
+          }
+        }
+        var base = m.nickname ? m.nickname.trim() : ""
+        return (base ? base + "-" : "") + job + (total >= 2 ? String(occ) : "")
+      }
+      function normalizeNames() {
+        members.forEach(function (m) {
+          m.chars.forEach(function (c, ci) {
+            var name = charAutoName(m, ci)
+            if (name) c.nickname = name
+          })
+        })
+      }
+
       function render() {
+        normalizeNames() // 重算自动角色名（同职业 ≥2 时追加序号）
         if (!members.length) {
           elMembers.innerHTML = '<div class="empty-tip">还没有成员 — 点上方「＋ 添加成员」开始录入</div>'
         } else {
@@ -733,17 +760,15 @@
             } else if (el.value) {
               el.classList.remove("invalid")
               el.classList.add("valid")
-              c.nickname = members[mi].nickname + "-" + el.value || ""
               c.job = el.value
+              normalizeNames() // 该成员同职业角色按 1、2、3… 编号
             }
           } else if (f === "fame") c.fame = el.value
           else if (f === "score") c.score = el.value
         } else {
           if (f === "nick") {
             members[mi].nickname = el.value
-            members[mi].chars.forEach(function (c) {
-              c.nickname = el.value + "-" + c.job || ""
-            })
+            normalizeNames()
           }
         }
         scheduleDraft()
