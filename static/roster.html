@@ -726,8 +726,16 @@
           var c = members[mi].chars[ci]
           if (f === "nick") c.nickname = el.value
           else if (f === "job") {
-            c.nickname = members[mi].nickname + "-" + el.value || ""
-            c.job = el.value
+            if (el.value && !JOB_SUG.includes(el.value)) {
+              c.job = ""
+              el.classList.add("invalid")
+              el.classList.remove("valid")
+            } else if (el.value) {
+              el.classList.remove("invalid")
+              el.classList.add("valid")
+              c.nickname = members[mi].nickname + "-" + el.value || ""
+              c.job = el.value
+            }
           } else if (f === "fame") c.fame = el.value
           else if (f === "score") c.score = el.value
         } else {
