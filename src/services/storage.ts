@@ -9,7 +9,7 @@ const LS_KEY = "dnf_schedule_data";
 /** 独立后端服务地址（非 Tauri 时调用）。默认 8899，可用环境变量 VITE_BACKEND_BASE 覆盖。 */
 const API_BASE = (
   (import.meta as unknown as { env?: { VITE_BACKEND_BASE?: string } }).env
-    ?.VITE_BACKEND_BASE ?? "http://127.0.0.1:8899"
+    ?.VITE_BACKEND_BASE ?? "https://www.kamilee.org/api"
 ).replace(/\/+$/, "");
 
 export async function loadDataRaw(): Promise<string | null> {
@@ -23,7 +23,7 @@ export async function loadDataRaw(): Promise<string | null> {
       // 后端尚无数据：若本地有旧数据则迁移到后端，避免丢数据
       const local = localStorage.getItem(LS_KEY);
       if (local) {
-        void fetch(`${API_BASE}/save_data`, { method: "POST", body: local }).catch(() => {});
+        void fetch(`${API_BASE}/save_data`, { method: "POST", body: local }).catch(() => { });
         return local;
       }
       return null;

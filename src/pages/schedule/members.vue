@@ -1,14 +1,11 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from "vue";
 import type { Character, Member } from "../../types/schedule";
-import { JOB_kIND, fmtEffScore, roleLabel, statLabel } from "../../types/schedule";
+import { JOB_kIND, fmtEffScore, roleLabel, statLabel, uid } from "../../types/schedule";
 import {
-  addCharacter,
   addMember,
   importRosterGroups,
-  removeCharacter,
   removeMember,
-  updateCharacter,
   updateMember,
   useScheduleStore,
 } from "../../composables/useScheduleStore";
@@ -20,6 +17,39 @@ import {
 import { exportJson, type ExportResult } from "../../services/storage";
 
 const store = useScheduleStore();
+
+/* ---------------- 角色名自动生成（与 roster.html 规则一致） ---------------- */
+/** 角色名 = 成员昵称-职业；同职业角色 ≥2 个时从第 1 个起加序号（…红眼1、红眼2）。 */
+function autoCharName(m: Member, ci: number): string {
+  const job = (m.characters[ci].job || "").trim();
+  if (!job) return "";
+  let total = 0;
+  let occ = 0;
+  m.characters.forEach((x, k) => {
+    if ((x.job || "").trim() === job) {
+      total++;
+      if (k <= ci) occ++;
+    }
+  });
+  const base = (m.nickname || "").trim();
+  return (base ? base + "-" : "") + job + (total >= 2 ? String(occ) : "");
+}
+
+/** 重算某成员全部角色昵称（新增/删除/改职业/改成员名后保证编号连续一致） */
+function normalizeMemberNames(m: Member) {
+  if (!m) return;
+  m.characters.forEach((_, ci) => {
+    const name = autoCharName(m, ci);
+    if (name) m.characters[ci].nickname = name;
+  });
+}
+
+/** 结构/命名变化后统一落盘：先重算昵称，再更新该成员 */
+function commitMember(m: Member) {
+  if (!m) return;
+  normalizeMemberNames(m);
+  updateMember(m);
+}
 
 /* ---------------- 成员弹窗 ---------------- */
 const memberDialog = ref(false);
@@ -44,7 +74,8 @@ function submitMember() {
     if (m) {
       m.nickname = nickname;
       m.schedulable = memberDraft.schedulable;
-      updateMember(m);
+      // 成员改名 → 该成员所有角色昵称同步更新（同职业编号重排）
+      commitMember(m);
     }
   } else {
     addMember(nickname);
@@ -88,11 +119,37 @@ function openCharDialog(memberId: string, c?: Character) {
   charDraft.score = c ? c.score : null;
 }
 
+/** 该角色（含新增/编辑草稿）将自动采用的昵称：成员昵称-职业 + 同职业序号，随职业/成员名实时变化 */
+const charPreviewName = computed(() => {
+  const d = charDraft;
+  const job = (d.job || "").trim();
+  if (!job || !d.memberId) return "";
+  const m = store.data.members.find((x) => x.id === d.memberId);
+  if (!m) return "";
+  const jobs: string[] = m.characters.map((c) => c.job || "");
+  let self = d.id ? m.characters.findIndex((c) => c.id === d.id) : m.characters.length;
+  if (d.id) {
+    if (self >= 0) jobs[self] = job;
+    else self = m.characters.length;
+  } else {
+    jobs.push(job);
+  }
+  let total = 0;
+  let occ = 0;
+  jobs.forEach((j, k) => {
+    if ((j || "").trim() === job) {
+      total++;
+      if (k <= self) occ++;
+    }
+  });
+  const base = (m.nickname || "").trim();
+  return (base ? base + "-" : "") + job + (total >= 2 ? String(occ) : "");
+});
+
 const charDraftValid = computed(() => {
   const d = charDraft;
   return (
-    d.nickname.trim().length > 0 &&
-    d.job.trim().length > 0 &&
+    !!charPreviewName.value &&
     (d.fame ?? 0) >= 0 &&
     (d.score ?? 0) >= 0
   );
@@ -100,19 +157,24 @@ const charDraftValid = computed(() => {
 
 function submitCharacter() {
   if (!charDraftValid.value) return;
+  const member = store.data.members.find((x) => x.id === charDraft.memberId);
+  if (!member) return;
   const payload: Character = {
-    id: charDraft.id ?? "",
-    nickname: charDraft.nickname.trim(),
+    id: charDraft.id ?? uid(),
+    nickname: charPreviewName.value,
     roleType: charDraft.roleType,
     job: charDraft.job.trim(),
     fame: charDraft.fame ?? 0,
     score: charDraft.score ?? 0,
   };
   if (charDraft.id) {
-    updateCharacter(charDraft.memberId, payload);
+    const i = member.characters.findIndex((c) => c.id === charDraft.id);
+    if (i >= 0) member.characters[i] = payload;
   } else {
-    addCharacter(charDraft.memberId, payload);
+    member.characters.push(payload);
   }
+  // 落盘并重算该成员所有角色昵称（同职业编号连续一致）
+  commitMember(member);
   charDialog.value = false;
 }
 
@@ -130,7 +192,10 @@ function removeMemberConfirm(m: Member) {
 
 function removeCharacterConfirm(memberId: string, c: Character) {
   if (confirm(`确定删除角色「${c.nickname}」？`)) {
-    removeCharacter(memberId, c.id);
+    const member = store.data.members.find((x) => x.id === memberId);
+    if (!member) return;
+    member.characters = member.characters.filter((x) => x.id !== c.id);
+    commitMember(member);
   }
 }
 
@@ -476,8 +541,17 @@ function doImport() {
         <h3 class="dialog__title">{{ charDraft.id ? "编辑角色" : "添加角色" }}</h3>
 
         <div class="form-field">
-          <label>角色昵称</label>
-          <input v-model="charDraft.nickname" class="input" type="text" placeholder="请输入角色昵称" />
+          <label>角色昵称（自动）</label>
+          <input
+            class="input char-nick"
+            type="text"
+            readonly
+            :value="charPreviewName"
+            placeholder="成员昵称-职业（自动）"
+          />
+          <p class="form-hint">
+            名称自动为「成员昵称-职业」；同一职业有多个角色时自动加序号（如 …-红眼1、红眼2）；改成员名/改职业时自动同步。
+          </p>
         </div>
 
         <div class="form-field">
@@ -987,6 +1061,20 @@ function doImport() {
   b {
     color: var(--app-primary);
   }
+}
+
+/* ===== 角色昵称自动显示 ===== */
+.char-nick {
+  color: var(--app-text);
+  background-color: color-mix(in srgb, var(--app-bg) 60%, transparent);
+  cursor: default;
+}
+
+.form-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--app-text-secondary);
 }
 
 .member__ops {

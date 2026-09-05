@@ -139,7 +139,7 @@ function ovGridCols(g: HistGroup): string {
   const hl = ovHl.value && ovHl.value.g === g.key ? "128px " : ""
   const n = ovColumns(g).length
   const team = n ? Array.from({ length: n }, () => "minmax(0, 1fr)").join(" ") : "1fr"
-  return `minmax(88px, auto) ${hl}${team}`
+  return `minmax(70px, auto) ${hl}${team}`
 }
 
 /** 取某“场”中对应列（按基准队伍）的角色列表 */
@@ -483,7 +483,8 @@ function ovHlOf(s: Schedule): ScheduledSlot[] {
 }
 
 .ov-chip {
-  min-width: 120px;
+  font-size: 14px;
+  min-width: 110px;
   display: inline-flex;
   margin: 2px 0;
   padding: 2px 8px;

@@ -141,7 +141,7 @@ export function roleLabel(t: RoleType): string {
 
 /** 数值含义标签：输出=伤害，辅助=奶量 */
 export function statLabel(t: RoleType): string {
-  return t === "dps" ? "伤害(千亿)" : "奶量";
+  return t === "dps" ? "伤害(千亿)" : "奶量(W)";
 }
 
 /** 排班展示名：创建日期（年月日）+ 模板名，如 “2026-09-04 困难团本(4队)” */
