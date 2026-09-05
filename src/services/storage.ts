@@ -6,11 +6,35 @@ export const isTauri =
 
 const LS_KEY = "dnf_schedule_data";
 
+/** 独立后端服务地址（非 Tauri 时调用）。默认 8899，可用环境变量 VITE_BACKEND_BASE 覆盖。 */
+const API_BASE = (
+  (import.meta as unknown as { env?: { VITE_BACKEND_BASE?: string } }).env
+    ?.VITE_BACKEND_BASE ?? "http://127.0.0.1:8899"
+).replace(/\/+$/, "");
+
 export async function loadDataRaw(): Promise<string | null> {
   if (isTauri) {
     return invoke<string | null>("load_data");
   }
-  return localStorage.getItem(LS_KEY);
+  // 非 Tauri：调用独立后端；后端不可达时回退 localStorage（保护旧开发数据）
+  try {
+    const res = await fetch(`${API_BASE}/load_data`);
+    if (res.status === 204) {
+      // 后端尚无数据：若本地有旧数据则迁移到后端，避免丢数据
+      const local = localStorage.getItem(LS_KEY);
+      if (local) {
+        void fetch(`${API_BASE}/save_data`, { method: "POST", body: local }).catch(() => {});
+        return local;
+      }
+      return null;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    return text.length ? text : null;
+  } catch (e) {
+    console.warn("[storage] 数据后端不可达，回退 localStorage:", e);
+    return localStorage.getItem(LS_KEY);
+  }
 }
 
 export async function saveDataRaw(json: string): Promise<void> {
@@ -18,7 +42,17 @@ export async function saveDataRaw(json: string): Promise<void> {
     await invoke("save_data", { payload: json });
     return;
   }
-  localStorage.setItem(LS_KEY, json);
+  // 非 Tauri：写入独立后端；后端不可达时回退 localStorage
+  try {
+    const res = await fetch(`${API_BASE}/save_data`, {
+      method: "POST",
+      body: json, // 纯文本请求体（text/plain，浏览器侧无需 CORS 预检）
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (e) {
+    console.warn("[storage] 数据后端不可达，回退 localStorage:", e);
+    localStorage.setItem(LS_KEY, json);
+  }
 }
 
 export interface ExportResult {

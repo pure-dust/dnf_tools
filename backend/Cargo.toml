@@ -1,0 +1,14 @@
+[package]
+name = "dnf_backend"
+version = "0.1.0"
+description = "独立的排班数据后端服务：提供 load_data / save_data 两个 HTTP 接口，数据存于运行目录"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "dnf_backend"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+strip = true
