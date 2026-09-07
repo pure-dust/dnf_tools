@@ -9,6 +9,9 @@ publish = false
 name = "dnf_backend"
 path = "src/main.rs"
 
+[dependencies]
+serde_json = "1"
+
 [profile.release]
 opt-level = 3
 strip = true
