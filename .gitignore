@@ -24,4 +24,5 @@ dist-ssr
 *.sw?
 
 /backend/target/
-make.ps1
+make_frontend.ps1
+make_backend.ps1
