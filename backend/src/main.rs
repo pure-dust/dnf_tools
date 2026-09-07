@@ -54,9 +54,15 @@ fn write_response(stream: &mut TcpStream, code: u16, content_type: &str, body: &
     );
     let _ = write_all(stream, b"Access-Control-Allow-Headers: Content-Type\r\n");
     if !body.is_empty() {
-        let _ = write_all(stream, format!("Content-Type: {}\r\n", content_type).as_bytes());
+        let _ = write_all(
+            stream,
+            format!("Content-Type: {}\r\n", content_type).as_bytes(),
+        );
     }
-    let _ = write_all(stream, format!("Content-Length: {}\r\n", body.len()).as_bytes());
+    let _ = write_all(
+        stream,
+        format!("Content-Length: {}\r\n", body.len()).as_bytes(),
+    );
     let _ = write_all(stream, b"\r\n");
     let _ = write_all(stream, body);
     let _ = stream.flush();
@@ -74,7 +80,11 @@ fn handle_client(mut stream: TcpStream) {
 
     // 请求行：`METHOD /path HTTP/1.1`
     let mut req_line = String::new();
-    if reader.read_line(&mut req_line).map(|n| n == 0).unwrap_or(true) {
+    if reader
+        .read_line(&mut req_line)
+        .map(|n| n == 0)
+        .unwrap_or(true)
+    {
         return;
     }
     let parts: Vec<&str> = req_line.split_whitespace().collect();

@@ -266,13 +266,29 @@ export function splitRounds(
     return arr.splice(i, 1)[0]
   }
 
+  // —— 红队奶优先：先把“全局最强”的那批奶按班次序预留给各班红队 ——
+  // 第 1 班红队拿最强、第 2 班红队次之…（各班红队奶按班次从强到弱）。
+  // 之后再从剩余奶里给各班补黄/绿等队伍的辅助——这些必然 ≤ 任一红队奶，
+  // 从而保证“所有波次红队奶都是最大”，不会出现前班绿奶 > 后班红奶。
+  // 不同班次可放同一成员（各上一号奶），因此直接每次取剩余最强即可。
+  const redFirst: (DraftItem | null)[] = []
+  const reserveN = Math.min(targetW, remSup.length)
+  for (let w = 0; w < targetW; w++) {
+    redFirst.push(w < reserveN ? (remSup.shift() ?? null) : null)
+  }
+
   if (!balance) {
     // —— 原分班逻辑（保持既有行为）——
     const waves: DraftItem[][] = []
     for (let w = 0; w < targetW; w++) {
       const wave: DraftItem[] = []
       const members = new Set<string>()
-      // ① 辅助先行：每班先放 supPerWave 个辅助（来自不同成员）
+      // ① 辅助先行：先放入已预留的“本班红队奶”，再补该班其余队伍的辅助（成员互异）
+      const redSup = redFirst[w]
+      if (redSup) {
+        wave.push(redSup)
+        members.add(redSup.memberId)
+      }
       while (wave.length < seat && wave.length < supPerWave) {
         const s = takeDistinct(remSup, members)
         if (!s) break
@@ -317,6 +333,12 @@ export function splitRounds(
   for (let w = 0; w < targetW; w++) {
     const wave: DraftItem[] = []
     const members = new Set<string>()
+    // ① 辅助先行：先放入已预留的“本班红队奶”，再补该班其余队伍的辅助（成员互异）
+    const redSup = redFirst[w]
+    if (redSup) {
+      wave.push(redSup)
+      members.add(redSup.memberId)
+    }
     while (wave.length < seat && wave.length < supPerWave) {
       const s = takeDistinct(remSup, members)
       if (!s) break
