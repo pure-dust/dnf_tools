@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import type { Character, Member } from "../../types/schedule";
 import { JOB_kIND, fmtEffScore, roleLabel, statLabel, uid } from "../../types/schedule";
 import {
@@ -17,6 +17,77 @@ import {
 import { exportJson, type ExportResult } from "../../services/storage";
 
 const store = useScheduleStore();
+
+/* ---------------- 瀑布流（JS 稳定分列）：每张卡片固定在某列，展开/收起永不跨列移动 ---------------- */
+const listEl = ref<HTMLElement | null>(null);
+const colCount = ref(1);
+/** memberId → 列号；只在“列数变化 / 成员增删”时更新，展开收起不影响 */
+const assign = ref<Record<string, number>>({});
+
+const COL_MIN = 360;
+const COL_GAP = 12;
+
+/** 估高口径（与是否展开无关，保证分配稳定）：卡片 ≈ 头部 + 角色行数 */
+function columnMetric(m: Member): number {
+  return 1 + m.characters.length;
+}
+
+/** 新增成员 → 放进“累计估高最少”的一列（已有卡片不动） */
+function syncColumns(forceAll = false) {
+  const members = store.data.members;
+  const n = colCount.value;
+  if (!members.length || n < 1) {
+    assign.value = {};
+    return;
+  }
+  const est = new Array<number>(n).fill(0);
+  const a: Record<string, number> = {};
+  const cur = forceAll ? {} : assign.value;
+  // 先统计已分配的成员（保持其列不动）
+  members.forEach((m) => {
+    const c = cur[m.id];
+    if (typeof c === "number" && c >= 0 && c < n) {
+      a[m.id] = c;
+      est[c] += columnMetric(m);
+    }
+  });
+  // 未分配的（含 forceAll 时全部）按当前最短列放入
+  members.forEach((m) => {
+    if (typeof a[m.id] === "number") return;
+    let best = 0;
+    for (let i = 1; i < n; i++) if (est[i] < est[best]) best = i;
+    a[m.id] = best;
+    est[best] += columnMetric(m);
+  });
+  assign.value = a;
+}
+
+function computeCols() {
+  const w = listEl.value?.clientWidth;
+  if (!w || w <= 0) return;
+  const n = Math.max(1, Math.floor(w / (COL_MIN + COL_GAP)));
+  if (n === colCount.value) return;
+  colCount.value = n;
+  syncColumns(true);
+}
+
+function membersOfCol(c: number): Member[] {
+  const a = assign.value;
+  return store.data.members.filter((m) => a[m.id] === c);
+}
+
+watch(
+  () => store.data.members.map((m) => m.id).join(","),
+  () => syncColumns(false),
+);
+
+onMounted(() => {
+  computeCols();
+  window.addEventListener("resize", computeCols);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", computeCols);
+});
 
 /* ---------------- 角色名自动生成（与 roster.html 规则一致） ---------------- */
 /** 角色名 = 成员昵称-职业；同职业角色 ≥2 个时从第 1 个起加序号（…红眼1、红眼2）。 */
@@ -422,9 +493,10 @@ function doImport() {
       还没有成员，先点击右上角「添加成员」吧
     </div>
 
-    <div class="members__list">
+    <div ref="listEl" class="members__list">
+      <div v-for="c in colCount" :key="c" class="members__col">
       <section
-        v-for="m in store.data.members"
+        v-for="m in membersOfCol(c - 1)"
         :key="m.id"
         class="member panel"
         :class="{ 'is-open': isOpen(m) }"
@@ -499,6 +571,7 @@ function doImport() {
           </div>
         </Transition>
       </section>
+      </div>
     </div>
 
     <!-- 成员弹窗 -->
@@ -753,9 +826,18 @@ function doImport() {
   }
 
   &__list {
-    /* 瀑布流（CSS 多列）：某成员角色很多也不会把下方其它成员整体冲下去 */
-    column-width: 360px;
-    column-gap: 12px;
+    /* 瀑布流：flex 多列，每列独立纵向排布；卡片列号固定不跨列 */
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  &__col {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
   }
 
   .member {
@@ -990,11 +1072,8 @@ function doImport() {
   gap: 8px;
 }
 
-/* ===== 成员卡片：折叠 + 瀑布流布局（多列，卡片不跨列/互不挤压） ===== */
+/* ===== 成员卡片：折叠 + 瀑布流（列内卡片，跨列位置固定） ===== */
 .member {
-  margin: 0 0 12px;
-  break-inside: avoid;
-  page-break-inside: avoid;
   overflow: hidden;
 
   &.is-open .member__head {
