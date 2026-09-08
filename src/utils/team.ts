@@ -222,6 +222,7 @@ export function totalDmgEff(items: DraftItem[]): number {
 /**
  * 拆班：**先按模板容量定“计划班数”，再按班填充（每班配足该班可组队伍所需的辅助）**。
  * - 计划班数 = ⌈总角色 / perWave⌉（纯按“模板参与人数上限”，不因成员数/奶等规则而增加）；
+ *   传入 fixedWaves>0 时固定为该班数（不再自动计算），按锁定的班数分配，多出进替补；
  * - 每班容量 seat = min(perWave, 参与成员数)，且同人每班至多 1 号；
  * - **辅助先行（按班）**：每班先放“该班能组满编队所需的辅助数” = max(1, ⌊seat/4⌋)
  *   （即 12 人班放 3 奶、8 人班放 2 奶、不足 4 人班放 1 奶），各奶来自不同成员；
@@ -234,9 +235,10 @@ export function splitRounds(
   perWave: number,
   carHeader = 0,
   balance = false,
+  fixedWaves = 0,
 ): { waves: DraftItem[][]; bench: DraftItem[] } {
   if (!items.length || perWave <= 0) return { waves: [], bench: [] }
-  if (items.length === 1) return { waves: [items], bench: [] }
+  if (items.length === 1 && fixedWaves <= 0) return { waves: [items], bench: [] }
 
   const isSup = (i: DraftItem) => i.character.roleType === "support"
   /** 车头：达到“车头伤害限制”的输出（每班尽量只放 1 个，避免大C扎堆同班） */
@@ -244,8 +246,11 @@ export function splitRounds(
     carHeader > 0 && !isSup(i) && effScore(i.character.job, i.character.score) >= carHeader
   const effOf = (i: DraftItem) => effScore(i.character.job, i.character.score)
   const memberCount = new Set(items.map((i) => i.memberId)).size
-  // 计划班数：纯按模板容量（不考虑成员/奶等规则）
-  const targetW = Math.max(1, Math.ceil(items.length / perWave))
+  // 计划班数：fixedWaves>0 固定（不再自动计算，超出的角色进替补）；否则按模板容量估算
+  const targetW =
+    fixedWaves > 0
+      ? Math.min(Math.max(1, Math.floor(fixedWaves)), 99)
+      : Math.max(1, Math.ceil(items.length / perWave))
   // 每班最多可坐人数：同人每班 1 号 → 受“参与成员数”限制
   const seat = Math.max(1, Math.min(perWave, memberCount))
   // 每班先配的辅助数 = 该班最多能组成的满编(4人)队数（保底 1）
@@ -319,7 +324,9 @@ export function splitRounds(
         wave.push(s)
         members.add(s.memberId)
       }
-      if (!wave.length) break
+      // 固定班数：即使某班没有足够成员也保留空班，保证总数与锁定一致；
+      // 非固定时若某班为空（池已耗尽）则停止，避免多余空班。
+      if (!wave.length && fixedWaves <= 0) break
       waves.push(wave)
     }
     // 计划班数用尽后仍未放下的角色 → 替补区（未用完的车头排前，留给缺车头的班/手动）

@@ -296,6 +296,61 @@ interface Wave {
 const waves = ref<Wave[]>([])
 /** 全局合并的替补区（各波的替补统一放这里） */
 const mergedBench = ref<DraftItem[]>([])
+
+/* ---------- 手动班次 + 固定班次数（锁定） ---------- */
+/** 是否“固定班次数”：开启后自动生成按固定波数分班，不再自动计算 */
+const fixedWaveOn = ref(false)
+const fixedWaveCount = ref(0)
+
+/** 当前生效的固定波数（0=自动计算） */
+function lockedRounds(): number {
+  return fixedWaveOn.value ? Math.max(1, Math.floor(fixedWaveCount.value) || 0) : 0
+}
+
+/** 勾选“固定”时给个默认值：已有波数或自动估算 */
+function toggleFixedWave() {
+  fixedWaveOn.value = !fixedWaveOn.value
+  if (fixedWaveOn.value && fixedWaveCount.value <= 0) {
+    fixedWaveCount.value = waves.value.length || roundCount.value || 1
+  }
+}
+
+/** 固定波数输入：解析为 1..99 整数 */
+function onFixedCount(ev: Event) {
+  const raw = Number((ev.target as HTMLInputElement).value)
+  fixedWaveCount.value = Number.isFinite(raw) ? Math.min(99, Math.max(1, Math.floor(raw))) : 1
+}
+
+/** 预览文案用：锁定后显示锁定波数，否则自动估算 */
+const shownRounds = computed(() => lockedRounds() || roundCount.value)
+
+/** 统一按当前顺序重排各波标签（第 1 波 / 第 2 波 …） */
+function relabelWaves() {
+  const n = waves.value.length
+  waves.value.forEach((w, i) => {
+    w.label = n > 1 ? `第 ${i + 1} 波` : "本波"
+  })
+}
+
+/** 手动新增一个空班次（按模板建空队，便于规划/拖拽填充） */
+function addWave() {
+  if (!template.value) return
+  if (!hasGenerated.value) hasGenerated.value = true // 先让结果区出现
+  const drafts = emptyDraftsFromTemplate(template.value.teams)
+  waves.value.push({ label: "", pool: [], teams: drafts })
+  relabelWaves()
+  if (fixedWaveOn.value) fixedWaveCount.value = waves.value.length
+}
+
+/** 删除某个空班次（仅允许删除没有成员的行） */
+function removeEmptyWave(wi: number) {
+  const w = waves.value[wi]
+  if (!w || w.teams.some((t) => t.items.length)) return
+  waves.value.splice(wi, 1)
+  relabelWaves()
+  if (fixedWaveOn.value) fixedWaveCount.value = Math.max(1, waves.value.length)
+}
+
 /** 替补区展示排序：先按 辅助→输出 分组，组内再按“相同成员”聚簇（原相对顺序决定成员先后）。
     仅影响展示，不改动 mergedBench 本身（插入/拖拽逻辑不受影响）。 */
 const sortedBench = computed<DraftItem[]>(() => {
@@ -451,6 +506,7 @@ function generate() {
     cap,
     template.value?.carHeader ?? 0,
     dmgBalance,
+    lockedRounds(), // 固定波数 >0 时按锁定班数分配，不再自动计算
   )
   const ws: Wave[] = []
   const benchAll: DraftItem[] = [...low, ...overflow]
@@ -1483,6 +1539,39 @@ function save() {
           <label>参与人数上限（由模板决定）</label>
           <input class="input" type="text" :value="template ? templateMax + ' 人' : '—'" disabled />
         </div>
+        <div class="form-field form-field--wide">
+          <label>波次（班次）</label>
+          <div class="wave-ctrl">
+            <label class="switch-line">
+              <input type="checkbox" :checked="fixedWaveOn" @change="toggleFixedWave" />
+              <span>固定波数（自动生成时不再自动计算班数，按锁定波数分配）</span>
+            </label>
+            <template v-if="fixedWaveOn">
+              <span class="wave-ctrl__lbl">波数</span>
+              <input
+                class="input wave-ctrl__num"
+                type="number"
+                min="1"
+                max="99"
+                :value="fixedWaveCount"
+                @input="onFixedCount($event)"
+              />
+              <span class="wave-ctrl__hint">多出的角色自动进替补</span>
+            </template>
+            <button
+              class="btn btn--sm"
+              type="button"
+              :disabled="!template"
+              title="手动新增一个空班次（可再点自动生成填充）"
+              @click="addWave"
+            >
+              ＋ 新增班次
+            </button>
+          </div>
+          <p class="wave-ctrl__tip">
+            未锁定时按“人数上限”自动拆波；锁定时按设定波数分配。结果区每个空班次左侧有“删除空班”可移除。
+          </p>
+        </div>
       </div>
     </section>
 
@@ -1498,9 +1587,10 @@ function save() {
           <button class="btn btn--sm" type="button" @click="clearAll">清空</button>
           <span class="create__pick-count">
             已选 <b>{{ selectedCount }}</b>
-            <template v-if="template && roundCount > 0">
-              · 将分 <b>{{ roundCount }}</b> 波（每波 ≤ {{ waveCap }} 人
+            <template v-if="template && shownRounds > 0">
+              · 将分 <b>{{ shownRounds }}</b> 波（每波 ≤ {{ waveCap }} 人
               <template v-if="waveCap < templateMax">，受成员人数 {{ selMemberCount }} 限制</template>）
+              <template v-if="fixedWaveOn">，已固定 {{ shownRounds }} 波，超出部分进替补</template>
             </template>
             <template v-if="lowSelectedCount > 0">
               · 低标 <b>{{ lowSelectedCount }}</b> 个（仅手动）
@@ -1703,6 +1793,15 @@ function save() {
                   @click="reassignWave(wave)"
                 >
                   重排本波
+                </button>
+                <button
+                  v-if="wave.teams.length && wavePlaced(wave) === 0"
+                  class="btn btn--sm btn--danger"
+                  type="button"
+                  title="删除该空班次"
+                  @click="removeEmptyWave(wi)"
+                >
+                  删除空班
                 </button>
               </div>
               <div
@@ -2884,5 +2983,46 @@ function save() {
 
 .bench__chip.is-hl-member {
   background-color: color-mix(in srgb, var(--app-primary) 28%, var(--app-border));
+}
+
+/* ===== 波次（班次）管理控件 ===== */
+.form-field--wide {
+  grid-column: 1 / -1;
+}
+
+.wave-ctrl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+
+  .switch-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  &__lbl {
+    font-size: 12px;
+    color: var(--app-text-secondary);
+  }
+
+  &__num {
+    width: 84px;
+    text-align: right;
+  }
+
+  &__hint {
+    font-size: 12px;
+    color: var(--app-text-secondary);
+  }
+
+  &__tip {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--app-text-secondary);
+  }
 }
 </style>
