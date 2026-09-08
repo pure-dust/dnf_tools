@@ -753,9 +753,9 @@ function doImport() {
   }
 
   &__list {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
+    /* 瀑布流（CSS 多列）：某成员角色很多也不会把下方其它成员整体冲下去 */
+    column-width: 360px;
+    column-gap: 12px;
   }
 
   .member {
@@ -990,15 +990,11 @@ function doImport() {
   gap: 8px;
 }
 
-/* ===== 成员卡片：折叠 + 布局优化（覆盖上方） ===== */
-.members__list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-  gap: 12px;
-  align-items: start;
-}
-
+/* ===== 成员卡片：折叠 + 瀑布流布局（多列，卡片不跨列/互不挤压） ===== */
 .member {
+  margin: 0 0 12px;
+  break-inside: avoid;
+  page-break-inside: avoid;
   overflow: hidden;
 
   &.is-open .member__head {
