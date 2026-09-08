@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, reactive, ref } from "vue";
 import type { Character, Member } from "../../types/schedule";
 import { JOB_kIND, fmtEffScore, roleLabel, statLabel, uid } from "../../types/schedule";
 import {
@@ -17,77 +17,6 @@ import {
 import { exportJson, type ExportResult } from "../../services/storage";
 
 const store = useScheduleStore();
-
-/* ---------------- 瀑布流（JS 稳定分列）：每张卡片固定在某列，展开/收起永不跨列移动 ---------------- */
-const listEl = ref<HTMLElement | null>(null);
-const colCount = ref(1);
-/** memberId → 列号；只在“列数变化 / 成员增删”时更新，展开收起不影响 */
-const assign = ref<Record<string, number>>({});
-
-const COL_MIN = 360;
-const COL_GAP = 12;
-
-/** 估高口径（与是否展开无关，保证分配稳定）：卡片 ≈ 头部 + 角色行数 */
-function columnMetric(m: Member): number {
-  return 1 + m.characters.length;
-}
-
-/** 新增成员 → 放进“累计估高最少”的一列（已有卡片不动） */
-function syncColumns(forceAll = false) {
-  const members = store.data.members;
-  const n = colCount.value;
-  if (!members.length || n < 1) {
-    assign.value = {};
-    return;
-  }
-  const est = new Array<number>(n).fill(0);
-  const a: Record<string, number> = {};
-  const cur = forceAll ? {} : assign.value;
-  // 先统计已分配的成员（保持其列不动）
-  members.forEach((m) => {
-    const c = cur[m.id];
-    if (typeof c === "number" && c >= 0 && c < n) {
-      a[m.id] = c;
-      est[c] += columnMetric(m);
-    }
-  });
-  // 未分配的（含 forceAll 时全部）按当前最短列放入
-  members.forEach((m) => {
-    if (typeof a[m.id] === "number") return;
-    let best = 0;
-    for (let i = 1; i < n; i++) if (est[i] < est[best]) best = i;
-    a[m.id] = best;
-    est[best] += columnMetric(m);
-  });
-  assign.value = a;
-}
-
-function computeCols() {
-  const w = listEl.value?.clientWidth;
-  if (!w || w <= 0) return;
-  const n = Math.max(1, Math.floor(w / (COL_MIN + COL_GAP)));
-  if (n === colCount.value) return;
-  colCount.value = n;
-  syncColumns(true);
-}
-
-function membersOfCol(c: number): Member[] {
-  const a = assign.value;
-  return store.data.members.filter((m) => a[m.id] === c);
-}
-
-watch(
-  () => store.data.members.map((m) => m.id).join(","),
-  () => syncColumns(false),
-);
-
-onMounted(() => {
-  computeCols();
-  window.addEventListener("resize", computeCols);
-});
-onBeforeUnmount(() => {
-  window.removeEventListener("resize", computeCols);
-});
 
 /* ---------------- 角色名自动生成（与 roster.html 规则一致） ---------------- */
 /** 角色名 = 成员昵称-职业；同职业角色 ≥2 个时从第 1 个起加序号（…红眼1、红眼2）。 */
@@ -270,30 +199,14 @@ function removeCharacterConfirm(memberId: string, c: Character) {
   }
 }
 
-/* ---------------- 折叠/展开 ---------------- */
-/** 已手动展开的成员 id */
-const expanded = ref<string[]>([]);
-const expandedAll = computed(
-  () =>
-    store.data.members.length > 0 &&
-    store.data.members.every((m) => expanded.value.includes(m.id))
-);
+/* ---------------- 查看成员角色（弹窗展示，避免拉高卡片） ---------------- */
+const viewMember = ref<Member | null>(null);
 
-/** 无角色时始终展开，方便直接添加 */
-function isOpen(m: Member) {
-  return m.characters.length === 0 || expanded.value.includes(m.id);
+function openView(m: Member) {
+  viewMember.value = m;
 }
-
-function toggleExpand(id: string) {
-  expanded.value = expanded.value.includes(id)
-    ? expanded.value.filter((x) => x !== id)
-    : [...expanded.value, id];
-}
-
-function toggleAll() {
-  expanded.value = expandedAll.value
-    ? []
-    : store.data.members.map((m) => m.id);
+function closeView() {
+  viewMember.value = null;
 }
 
 function memberRoleCounts(m: Member) {
@@ -474,9 +387,6 @@ function doImport() {
         </p>
       </div>
       <div class="members__head-ops">
-        <button class="btn" type="button" @click="toggleAll">
-          {{ expandedAll ? "收起全部" : "展开全部" }}
-        </button>
         <button class="btn" type="button" @click="openExportDialog">
           导出 JSON
         </button>
@@ -493,15 +403,14 @@ function doImport() {
       还没有成员，先点击右上角「添加成员」吧
     </div>
 
-    <div ref="listEl" class="members__list">
-      <div v-for="c in colCount" :key="c" class="members__col">
+    <div class="members__list">
       <section
-        v-for="m in membersOfCol(c - 1)"
+        v-for="m in store.data.members"
         :key="m.id"
         class="member panel"
-        :class="{ 'is-open': isOpen(m) }"
+        :title="'点击查看/管理 ' + m.nickname + ' 的角色'"
       >
-        <header class="member__head" @click="toggleExpand(m.id)">
+        <header class="member__head" @click="openView(m)">
           <span class="member__avatar">{{ m.nickname.slice(0, 1) }}</span>
           <div class="member__main">
             <div class="member__title-row">
@@ -525,52 +434,37 @@ function doImport() {
             <button class="btn btn--sm" type="button" @click="openMemberDialog(m)">编辑</button>
             <button class="btn btn--sm btn--danger" type="button" @click="removeMemberConfirm(m)">删除</button>
           </div>
-          <button
-            class="member__chev"
-            type="button"
-            :aria-label="isOpen(m) ? '收起角色' : '展开角色'"
-            @click.stop="toggleExpand(m.id)"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              width="16"
-              height="16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
-          </button>
         </header>
-
-        <Transition name="expand">
-          <div v-show="isOpen(m)" class="member__body">
-            <div class="member__chars">
-              <div v-if="m.characters.length === 0" class="member__none">
-                该成员还没有角色
-              </div>
-              <div v-for="c in m.characters" :key="c.id" class="char">
-                <span class="char__nick">{{ c.nickname }}</span>
-                <span class="tag" :class="c.roleType === 'dps' ? 'tag--dps' : 'tag--support'">
-                  {{ roleLabel(c.roleType) }} · {{ c.job }}
-                </span>
-                <span class="char__field">名望 {{ c.fame }}</span>
-                <span class="char__field">{{ statLabel(c.roleType) }} {{ fmtEffScore(c.job, c.score) }}</span>
-                <span class="char__ops">
-                  <button class="btn btn--sm" type="button" @click="openCharDialog(m.id, c)">编辑</button>
-                  <button class="btn btn--sm btn--danger" type="button" @click="removeCharacterConfirm(m.id, c)">删除</button>
-                </span>
-              </div>
-            </div>
-            <button class="btn btn--sm member__add-char" type="button" @click="openCharDialog(m.id)">
-              + 添加角色
-            </button>
-          </div>
-        </Transition>
       </section>
+    </div>
+
+    <!-- 成员角色详情弹窗（角色多时也不拉高卡片，全部在弹窗里展示） -->
+    <div v-if="viewMember" class="overlay" @click.self="closeView">
+      <div class="dialog member-detail">
+        <div class="dialog__head">
+          <h3 class="dialog__title">{{ viewMember.nickname }} · 角色（{{ viewMember.characters.length }}）</h3>
+          <span class="members__sub">点卡片即可查看/管理该成员的角色</span>
+        </div>
+        <div class="member__chars">
+          <div v-if="viewMember.characters.length === 0" class="member__none">该成员还没有角色</div>
+          <div v-for="c in viewMember.characters" :key="c.id" class="char">
+            <span class="char__nick">{{ c.nickname }}</span>
+            <span class="tag" :class="c.roleType === 'dps' ? 'tag--dps' : 'tag--support'">
+              {{ roleLabel(c.roleType) }} · {{ c.job }}
+            </span>
+            <span class="char__field">名望 {{ c.fame }}</span>
+            <span class="char__field">{{ statLabel(c.roleType) }} {{ fmtEffScore(c.job, c.score) }}</span>
+            <span class="char__ops">
+              <button class="btn btn--sm" type="button" @click="openCharDialog(viewMember.id, c)">编辑</button>
+              <button class="btn btn--sm btn--danger" type="button" @click="removeCharacterConfirm(viewMember.id, c)">删除</button>
+            </span>
+          </div>
+        </div>
+        <div class="dialog__ops">
+          <button class="btn btn--sm" type="button" @click="openCharDialog(viewMember.id)">+ 添加角色</button>
+          <span style="flex: 1"></span>
+          <button class="btn" type="button" @click="closeView">关闭</button>
+        </div>
       </div>
     </div>
 
@@ -826,18 +720,11 @@ function doImport() {
   }
 
   &__list {
-    /* 瀑布流：flex 多列，每列独立纵向排布；卡片列号固定不跨列 */
-    display: flex;
-    align-items: flex-start;
+    /* 对齐网格：每行等高对齐，卡片不被角色数拉高 */
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
     gap: 12px;
-  }
-
-  &__col {
-    flex: 1 1 0;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
+    align-items: start;
   }
 
   .member {
@@ -1154,6 +1041,13 @@ function doImport() {
 
 .member__ops {
   margin-left: auto;
+}
+
+/* 成员角色详情弹窗 */
+.member-detail {
+  width: min(760px, calc(100vw - 40px));
+  max-height: 86vh;
+  overflow: auto;
 }
 
 .member__chev {
