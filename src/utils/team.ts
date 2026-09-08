@@ -211,6 +211,45 @@ export function teamCounts(items: DraftItem[]) {
   };
 }
 
+/**
+ * 兜底：硬保证“每波内 红>黄>绿 的奶量”。
+ * 把同波各队的辅助抽出按有效奶量降序重新分配，伤害门槛高的队伍（红→黄→绿）优先拿更大的奶。
+ * 只在该波给定队伍之间移动辅助（成员仍互异，不会造成同人重复），队伍原有辅助数量不变。
+ * 仅在生成/自动调整后调用；手动拖拽不受此限制。
+ */
+export function tierWaveSupports(teams: TeamDraft[]) {
+  const isSup = (i: DraftItem) => i.character.roleType === "support"
+  const effOf = (i: DraftItem) => effScore(i.character.job, i.character.score)
+  // 队伍按 伤害门槛降序 → 红、黄、绿…
+  const order = teams
+    .map((t, i) => ({ t, i }))
+    .sort((a, b) => (b.t.damageLimit || 0) - (a.t.damageLimit || 0) || a.i - b.i)
+    .map((x) => x.t)
+  if (order.length <= 1) return
+  const counts = order.map((t) => t.items.filter(isSup).length)
+  // 抽走全部辅助并暂存
+  const sups: DraftItem[] = []
+  teams.forEach((t) => {
+    t.items = t.items.filter((it) => {
+      if (isSup(it)) {
+        sups.push(it)
+        return false
+      }
+      return true
+    })
+  })
+  if (!sups.length) return
+  sups.sort((a, b) => effOf(b) - effOf(a))
+  // 按红→黄→绿 顺序把最强的辅助分回各队（每队数量与原来一致）
+  let k = 0
+  order.forEach((t, idx) => {
+    const n = counts[idx]
+    for (let j = 0; j < n && k < sups.length; j++) {
+      t.items.push(sups[k++])
+    }
+  })
+}
+
 /** 队伍内输出的“有效伤害合计”（总伤害下限校验用，与展示/比较同口径） */
 export function totalDmgEff(items: DraftItem[]): number {
   return items.reduce(

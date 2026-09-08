@@ -11,6 +11,7 @@ import {
   estimateWaveCount,
   splitRounds,
   teamCounts,
+  tierWaveSupports,
   toScheduleTeams,
   totalDmgEff,
   TEAM_SIZE,
@@ -525,6 +526,14 @@ function generate() {
   hasGenerated.value = true
   // 生成后内置“多次插入”：按生成逻辑（启用空队、先辅后出、每队≤4、同人每班1号）反复补，直到无法再插入
   insertBenchToTeams()
+  // 兜底：保证每波内 红>黄>绿 的奶量
+  applyTierWaves()
+}
+
+/** 兜底：对全部波次重排辅助，硬保证“每波内红>黄>绿”；存在列锁定时跳过（交由各分支局部处理） */
+function applyTierWaves() {
+  if (lockedCols.value.length) return
+  waves.value.forEach((w) => tierWaveSupports(w.teams))
 }
 
 /**
@@ -685,6 +694,8 @@ function refillFreeCols() {
         }
       }
     }
+    // 兜底：未锁定列内按红→黄→绿重排辅助（锁定列不动）
+    tierWaveSupports(freeTeams)
     overflow.push(...supA, ...dpsA)
   })
   // 同步每波 pool（显示与后续“重排本波”以实际占用为准）
@@ -771,6 +782,8 @@ function autoFillBench() {
     if (!placed) rest.push(item)
   }
   mergedBench.value = rest
+  // 兜底：保证每波内红>黄>绿
+  applyTierWaves()
 }
 
 /* ---------------- 结果区总览式网格（行=波次，列=队伍） ---------------- */
@@ -817,6 +830,8 @@ function reassignWave(wave: Wave) {
     mergedBench.value = mergedBench.value.filter((x) => !poolIds.has(x.character.id))
     const res = assignByLimits(wave.teams, wave.pool)
     wave.teams = res.teams
+    // 兜底：整波辅助按红→黄→绿重排
+    tierWaveSupports(wave.teams)
     mergedBench.value.push(...res.bench)
     return
   }
@@ -861,6 +876,8 @@ function reassignWave(wave: Wave) {
       t.items = f ? f.items : []
     }
   })
+  // 兜底：在未锁定列内按红→黄→绿重排辅助（锁定列不动）
+  tierWaveSupports(freeIdx.map((idx) => wave.teams[idx]))
   mergedBench.value.push(...res.bench.filter((b) => !seen.has(b.character.id)))
 }
 
