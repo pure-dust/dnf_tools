@@ -3,8 +3,9 @@ import { computed, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
 import type { Schedule, ScheduledSlot } from "../../types/schedule"
 import { effScore, fmtEffScore, scheduleTitle } from "../../types/schedule"
-import { ensureLoaded, removeSchedule, useScheduleStore } from "../../composables/useScheduleStore"
+import { ensureLoaded, importSchedules, removeSchedule, useScheduleStore } from "../../composables/useScheduleStore"
 import { colorizeTeams } from "../../utils/teamColor"
+import { exportJson, type ExportResult } from "../../services/storage"
 
 const store = useScheduleStore()
 const router = useRouter()
@@ -201,6 +202,72 @@ function ovHlOf(s: Schedule): ScheduledSlot[] {
   )
   return out
 }
+
+/* ---------------- 导入 / 导出 ---------------- */
+const importOpen = ref(false)
+const importText = ref("")
+const importFileName = ref("")
+const importMsg = ref<{ ok: boolean; text: string } | null>(null)
+const exportMsg = ref<ExportResult | null>(null)
+const exporting = ref(false)
+
+function openImportDialog() {
+  importOpen.value = true
+  importText.value = ""
+  importFileName.value = ""
+  importMsg.value = null
+}
+
+function onImportFile(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    importText.value = String(reader.result ?? "")
+    importFileName.value = file.name
+    importMsg.value = null
+  }
+  reader.readAsText(file)
+  input.value = ""
+}
+
+async function doExportSchedules() {
+  if (exporting.value || !schedules.value.length) return
+  exporting.value = true
+  exportMsg.value = null
+  try {
+    const stamp = new Date().toISOString().slice(0, 10)
+    exportMsg.value = await exportJson(
+      `排班历史_${stamp}.json`,
+      JSON.stringify(store.data.schedules, null, 2),
+    )
+  } finally {
+    exporting.value = false
+  }
+}
+
+function doImportSchedules() {
+  let arr: unknown[] | null = null
+  try {
+    const v = JSON.parse(importText.value)
+    if (Array.isArray(v)) arr = v
+  } catch {
+    arr = null
+  }
+  if (!arr) {
+    importMsg.value = { ok: false, text: "解析失败：请粘贴/选择“排班记录数组”JSON（本页导出的格式）" }
+    return
+  }
+  const n = importSchedules(arr)
+  importMsg.value = {
+    ok: true,
+    text: `导入完成：成功 ${n} 场排班（已重新编号，同组场次保持同组）`,
+  }
+  window.setTimeout(() => {
+    if (importOpen.value) importOpen.value = false
+  }, 900)
+}
 </script>
 
 <template>
@@ -213,7 +280,48 @@ function ovHlOf(s: Schedule): ScheduledSlot[] {
           <template v-if="schedules.length > groups.length"> · {{ schedules.length }} 场班次 </template>
         </p>
       </div>
-      <button class="btn btn--primary" type="button" @click="router.push('/schedule/create')">+ 新建排班</button>
+      <div class="history__ops">
+        <button class="btn" type="button" :disabled="schedules.length === 0" @click="doExportSchedules">
+          {{ exporting ? "导出中…" : "导出 JSON" }}
+        </button>
+        <button class="btn" type="button" @click="openImportDialog">导入</button>
+        <button class="btn btn--primary" type="button" @click="router.push('/schedule/create')">+ 新建排班</button>
+        <span v-if="exportMsg" class="history__tip" :class="exportMsg.ok ? 'is-ok' : 'is-err'">
+          {{ exportMsg.message }}<template v-if="exportMsg.path">：{{ exportMsg.path }}</template>
+        </span>
+      </div>
+    </div>
+
+    <!-- 导入排班历史弹窗 -->
+    <div v-if="importOpen" class="overlay" @click.self="importOpen = false">
+      <div class="dialog">
+        <h3 class="dialog__title">导入排班历史</h3>
+        <p class="history__hint">
+          粘贴一个“排班记录数组” JSON（可先在另一台设备用本页「导出 JSON」得到）。导入会自动重新编号，不覆盖现有记录。
+        </p>
+        <div class="history__src">
+          <textarea
+            v-model="importText"
+            class="input history__json"
+            rows="8"
+            placeholder='[ { "time": "2026-09-01T19:00", "maxMembers": 12, "teams": [ ... ] } ]'
+            spellcheck="false"
+          ></textarea>
+          <label class="btn history__file">
+            选择 .json 文件{{ importFileName ? `（${importFileName}）` : "" }}
+            <input type="file" accept=".json,application/json" hidden @change="onImportFile" />
+          </label>
+        </div>
+        <div v-if="importMsg" class="history__tip" :class="importMsg.ok ? 'is-ok' : 'is-err'">
+          {{ importMsg.text }}
+        </div>
+        <div class="dialog__ops">
+          <button class="btn" type="button" @click="importOpen = false">取消</button>
+          <button class="btn btn--primary" type="button" :disabled="!importText.trim()" @click="doImportSchedules">
+            导入
+          </button>
+        </div>
+      </div>
     </div>
 
     <div v-if="groups.length === 0" class="empty">暂无历史排班，去「创建排班」生成一条吧</div>
@@ -345,6 +453,52 @@ function ovHlOf(s: Schedule): ScheduledSlot[] {
     margin-top: 2px;
     font-size: 12px;
     color: var(--app-text-secondary);
+  }
+
+  &__ops {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  &__tip {
+    font-size: 12px;
+
+    &.is-ok {
+      color: var(--app-success);
+    }
+    &.is-err {
+      color: var(--app-danger);
+    }
+  }
+
+  &__hint {
+    margin: 0 0 8px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--app-text-secondary);
+  }
+
+  &__src {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  &__json {
+    min-height: 150px;
+    resize: vertical;
+    font-family: Consolas, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  &__file {
+    align-self: flex-start;
+    input {
+      display: none;
+    }
   }
 
   &__list {

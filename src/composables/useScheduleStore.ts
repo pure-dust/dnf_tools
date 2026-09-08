@@ -3,7 +3,10 @@ import type {
   AppData,
   Character,
   Member,
+  RoleType,
   Schedule,
+  ScheduledSlot,
+  Team,
   Template,
   TemplateTeam,
 } from "../types/schedule";
@@ -183,6 +186,114 @@ export function updateTemplate(tpl: Template) {
 export function removeTemplate(id: string) {
   store.data.templates = store.data.templates.filter((t) => t.id !== id);
   void persist();
+}
+
+/* ---------------- 模板 / 排班 批量导入 ---------------- */
+function toNum(v: unknown, d = 0): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+}
+function toStr(v: unknown, d = ""): string {
+  return typeof v === "string" ? v : d;
+}
+function toRole(v: unknown): RoleType {
+  const s = toStr(v);
+  return s === "support" || s === "辅助" ? "support" : "dps";
+}
+
+/** 批量导入模板：同名模板覆盖（保留 id），其余追加。返回成功条数。 */
+export function importTemplates(list: unknown[]): number {
+  if (!Array.isArray(list)) return 0;
+  let added = 0;
+  for (const raw of list as Array<Record<string, unknown>>) {
+    const name = toStr(raw?.name).trim();
+    const rawTeams = Array.isArray(raw?.teams) ? (raw.teams as Array<Record<string, unknown>>) : [];
+    const teams: TemplateTeam[] = rawTeams.map((tt) => ({
+      id: uid(),
+      name: toStr(tt?.name) || "队",
+      damageLimit: Math.max(0, toNum(tt?.damageLimit)),
+      healLimit: Math.max(0, toNum(tt?.healLimit)),
+      totalDamageLimit: Math.max(0, toNum(tt?.totalDamageLimit)),
+      minDps: Math.max(0, toNum(tt?.minDps)),
+      minSup: Math.max(1, toNum(tt?.minSup, 1)),
+    }));
+    if (!name || !teams.length) continue;
+    const tpl: Template = {
+      id: uid(),
+      name,
+      maxMembers: Math.min(20, Math.max(1, toNum(raw?.maxMembers, 16) || 16)),
+      teams,
+      minDamage: Math.max(0, toNum(raw?.minDamage)),
+      minHeal: Math.max(0, toNum(raw?.minHeal)),
+      carHeader: Math.max(0, toNum(raw?.carHeader)),
+    };
+    const exist = store.data.templates.find((x) => x.name.trim() === name);
+    if (exist) {
+      store.data.templates[store.data.templates.indexOf(exist)] = { ...tpl, id: exist.id };
+    } else {
+      store.data.templates.push(tpl);
+    }
+    added++;
+  }
+  if (added) void persist();
+  return added;
+}
+
+/** 批量导入排班历史：每条重新分配 id；同 groupId 的记录映射到同一新组。返回成功条数。 */
+export function importSchedules(list: unknown[]): number {
+  if (!Array.isArray(list)) return 0;
+  let added = 0;
+  const grpMap = new Map<string, string>();
+  const toSlot = (s: Record<string, unknown> | undefined): ScheduledSlot => ({
+    memberId: toStr(s?.memberId),
+    characterId: toStr(s?.characterId),
+    memberName: toStr(s?.memberName),
+    nickname: toStr(s?.nickname),
+    roleType: toRole(s?.roleType),
+    job: toStr(s?.job),
+    fame: toNum(s?.fame),
+    score: toNum(s?.score),
+  });
+  for (const raw of list as Array<Record<string, unknown>>) {
+    const rawTeams = Array.isArray(raw?.teams) ? (raw.teams as Array<Record<string, unknown>>) : [];
+    if (!rawTeams.length) continue;
+    const newId = uid();
+    let gid: string | undefined;
+    if (toStr(raw?.groupId)) {
+      const gk = toStr(raw?.groupId);
+      if (!grpMap.has(gk)) grpMap.set(gk, uid());
+      gid = grpMap.get(gk);
+    }
+    const teams: Team[] = rawTeams.map((t) => ({
+      id: uid(),
+      name: toStr(t?.name) || "队",
+      members: (Array.isArray(t?.members) ? (t.members as Array<Record<string, unknown>>) : []).map(toSlot),
+      damageLimit: toNum(t?.damageLimit),
+      healLimit: toNum(t?.healLimit),
+      totalDamageLimit: toNum(t?.totalDamageLimit) || 0,
+      minDps: toNum(t?.minDps),
+      minSup: toNum(t?.minSup, 1),
+    }));
+    const rec: Schedule = {
+      id: newId,
+      time: toStr(raw?.time),
+      dungeon: toStr(raw?.dungeon) || undefined,
+      createdAt: toNum(raw?.createdAt) || Date.now(),
+      templateId: toStr(raw?.templateId) || undefined,
+      templateName: toStr(raw?.templateName) || undefined,
+      carHeader: toNum(raw?.carHeader),
+      groupId: gid,
+      roundLabel: toStr(raw?.roundLabel) || undefined,
+      roundIndex: toNum(raw?.roundIndex),
+      maxMembers: toNum(raw?.maxMembers),
+      teams,
+      bench: Array.isArray(raw?.bench) ? (raw.bench as Array<Record<string, unknown>>).map(toSlot) : undefined,
+    };
+    store.data.schedules.push(rec);
+    added++;
+  }
+  if (added) void persist();
+  return added;
 }
 
 export function useScheduleStore() {

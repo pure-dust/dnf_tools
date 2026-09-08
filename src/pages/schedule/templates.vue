@@ -4,11 +4,13 @@ import type { Template, TemplateTeam } from "../../types/schedule";
 import { uid } from "../../types/schedule";
 import {
   addTemplate,
+  importTemplates,
   removeTemplate,
   updateTemplate,
   useScheduleStore,
 } from "../../composables/useScheduleStore";
 import { colorizeTeams, type TeamLike } from "../../utils/teamColor";
+import { exportJson, type ExportResult } from "../../services/storage";
 
 const store = useScheduleStore();
 
@@ -131,6 +133,72 @@ function remove(t: Template) {
     removeTemplate(t.id);
   }
 }
+
+/* ---------------- 导入 / 导出 ---------------- */
+const importOpen = ref(false);
+const importText = ref("");
+const importFileName = ref("");
+const importMsg = ref<{ ok: boolean; text: string } | null>(null);
+const exportMsg = ref<ExportResult | null>(null);
+const exporting = ref(false);
+
+function openImportDialog() {
+  importOpen.value = true;
+  importText.value = "";
+  importFileName.value = "";
+  importMsg.value = null;
+}
+
+function onImportFile(ev: Event) {
+  const input = ev.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    importText.value = String(reader.result ?? "");
+    importFileName.value = file.name;
+    importMsg.value = null;
+  };
+  reader.readAsText(file);
+  input.value = "";
+}
+
+async function doExportTemplates() {
+  if (exporting.value || store.data.templates.length === 0) return;
+  exporting.value = true;
+  exportMsg.value = null;
+  try {
+    const stamp = new Date().toISOString().slice(0, 10);
+    exportMsg.value = await exportJson(
+      `排班模板_${stamp}.json`,
+      JSON.stringify(store.data.templates, null, 2),
+    );
+  } finally {
+    exporting.value = false;
+  }
+}
+
+function doImportTemplates() {
+  let arr: unknown[] | null = null;
+  try {
+    const v = JSON.parse(importText.value);
+    if (Array.isArray(v)) arr = v;
+  } catch {
+    arr = null;
+  }
+  if (!arr) {
+    importMsg.value = { ok: false, text: "解析失败：请粘贴/选择“模板数组”JSON，例如 [ { name, maxMembers, teams: [...] } ]" };
+    return;
+  }
+  const n = importTemplates(arr);
+  importMsg.value = {
+    ok: true,
+    text: `导入完成：成功 ${n} 条${n > 0 ? "（同名模板已覆盖，其余追加）" : ""}`,
+  };
+  window.setTimeout(() => {
+    if (importOpen.value) importOpen.value = false;
+  }, 900);
+}
 </script>
 
 <template>
@@ -140,7 +208,16 @@ function remove(t: Template) {
         <h2 class="tpls__title">排班模板</h2>
         <p class="tpls__sub">共 {{ store.data.templates.length }} 个模板 · 颜色按队伍伤害门槛从高到低：红→黄→绿→蓝</p>
       </div>
-      <button class="btn btn--primary" type="button" @click="openCreate">+ 新建模板</button>
+      <div class="tpls__ops">
+        <button class="btn" type="button" :disabled="store.data.templates.length === 0" @click="doExportTemplates">
+          {{ exporting ? "导出中…" : "导出 JSON" }}
+        </button>
+        <button class="btn" type="button" @click="openImportDialog">导入</button>
+        <button class="btn btn--primary" type="button" @click="openCreate">+ 新建模板</button>
+        <span v-if="exportMsg" class="tpls__tip" :class="exportMsg.ok ? 'is-ok' : 'is-err'">
+          {{ exportMsg.message }}<template v-if="exportMsg.path">：{{ exportMsg.path }}</template>
+        </span>
+      </div>
     </div>
 
     <div v-if="store.data.templates.length === 0" class="empty">
@@ -283,6 +360,38 @@ function remove(t: Template) {
         </div>
       </div>
     </div>
+
+    <!-- 导入模板弹窗 -->
+    <div v-if="importOpen" class="overlay" @click.self="importOpen = false">
+      <div class="dialog">
+        <h3 class="dialog__title">导入模板</h3>
+        <p class="tpls__hint">
+          粘贴一个“模板数组” JSON（可先在另一台设备用本页「导出 JSON」得到）。同名模板会覆盖，其余追加。
+        </p>
+        <div class="tpls__src">
+          <textarea
+            v-model="importText"
+            class="input tpls__json"
+            rows="8"
+            placeholder='[ { "name": "困难12人", "maxMembers": 12, "teams": [ ... ] } ]'
+            spellcheck="false"
+          ></textarea>
+          <label class="btn tpls__file">
+            选择 .json 文件{{ importFileName ? `（${importFileName}）` : "" }}
+            <input type="file" accept=".json,application/json" hidden @change="onImportFile" />
+          </label>
+        </div>
+        <div v-if="importMsg" class="tpls__tip" :class="importMsg.ok ? 'is-ok' : 'is-err'">
+          {{ importMsg.text }}
+        </div>
+        <div class="dialog__ops">
+          <button class="btn" type="button" @click="importOpen = false">取消</button>
+          <button class="btn btn--primary" type="button" :disabled="!importText.trim()" @click="doImportTemplates">
+            导入
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -300,6 +409,52 @@ function remove(t: Template) {
     font-size: 17px;
     font-weight: 600;
     color: var(--app-text);
+  }
+
+  &__ops {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  &__tip {
+    font-size: 12px;
+
+    &.is-ok {
+      color: var(--app-success);
+    }
+    &.is-err {
+      color: var(--app-danger);
+    }
+  }
+
+  &__hint {
+    margin: 0 0 8px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--app-text-secondary);
+  }
+
+  &__src {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  &__json {
+    min-height: 150px;
+    resize: vertical;
+    font-family: Consolas, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  &__file {
+    align-self: flex-start;
+    input {
+      display: none;
+    }
   }
 
   &__sub {
