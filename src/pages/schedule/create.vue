@@ -1406,6 +1406,66 @@ function pdBench(ev: PointerEvent | MouseEvent, item: DraftItem) {
   beginDrag(ev, { wave: null, kind: "bench", teamIdx: 0, item }, ev.currentTarget as HTMLElement | null)
 }
 
+/* ---------- 班次（波次）拖动交换顺序 ---------- */
+const waveDrag = ref<number | null>(null)
+const waveDrop = ref<number | null>(null)
+
+function removeWaveListeners() {
+  window.removeEventListener("pointermove", onWaveMove)
+  window.removeEventListener("pointerup", onWaveUp)
+  window.removeEventListener("pointercancel", onWaveCancel)
+  window.removeEventListener("mousemove", onWaveMove)
+  window.removeEventListener("mouseup", onWaveUp)
+}
+
+function clearWaveDrag() {
+  waveDrag.value = null
+  waveDrop.value = null
+  removeWaveListeners()
+}
+
+/** 由指针坐标找到当前所在“波次”行索引（-1=不在任何波次） */
+function waveIdxAt(x: number, y: number): number {
+  const el = document.elementFromPoint(x, y) as HTMLElement | null
+  const host = el?.closest?.("[data-wi]") as HTMLElement | null
+  const w = host ? Number(host.getAttribute("data-wi")) : -1
+  return Number.isInteger(w) && w >= 0 && w < waves.value.length ? w : -1
+}
+
+function onWaveMove(ev: { clientX: number; clientY: number }) {
+  waveDrop.value = waveIdxAt(ev.clientX, ev.clientY)
+}
+
+function onWaveUp(ev: { clientX: number; clientY: number }) {
+  const s = waveDrag.value
+  const t = waveIdxAt(ev.clientX, ev.clientY)
+  clearWaveDrag()
+  if (s == null || t < 0 || t === s) return
+  // 交换两个班次的顺序
+  const arr = waves.value
+  const tmp = arr[s]
+  arr[s] = arr[t]
+  arr[t] = tmp
+  relabelWaves()
+}
+
+function onWaveCancel() {
+  clearWaveDrag()
+}
+
+function pdWave(ev: PointerEvent | MouseEvent, wi: number) {
+  if (ev.button !== 0) return
+  if (waveDrag.value != null) return
+  ev.preventDefault()
+  waveDrag.value = wi
+  waveDrop.value = null
+  window.addEventListener("pointermove", onWaveMove, { passive: false })
+  window.addEventListener("pointerup", onWaveUp)
+  window.addEventListener("pointercancel", onWaveCancel)
+  window.addEventListener("mousemove", onWaveMove, { passive: false })
+  window.addEventListener("mouseup", onWaveUp)
+}
+
 /* ---------- 保存（每波存成一条排班） ---------- */
 const canSave = computed(() => {
   return (
@@ -1800,7 +1860,22 @@ function save() {
 
             <!-- 每波一行 -->
             <template v-for="(wave, wi) in waves" :key="wi">
-              <div class="res-round">
+              <div
+                class="res-round"
+                :data-wi="wi"
+                :class="{
+                  'is-wave-src': waveDrag === wi,
+                  'is-wave-drop': waveDrag !== null && waveDrop === wi,
+                }"
+              >
+                <span
+                  class="res-round__grip"
+                  :class="{ 'is-active': waveDrag === wi }"
+                  title="拖动可交换该班次与其它班次的顺序"
+                  @pointerdown="pdWave($event, wi)"
+                  @mousedown="pdWave($event, wi)"
+                  >⋮⋮</span
+                >
                 <b class="wave__label">{{ wave.label }}</b>
                 <span class="res-round__meta">已排 {{ wavePlaced(wave) }} / {{ wave.pool.length }}</span>
                 <button
@@ -1831,6 +1906,8 @@ function save() {
                 :class="{
                   'is-empty': t.items.length === 0,
                   'is-locked': isColLocked(idx),
+                  'is-wave-src': waveDrag === wi,
+                  'is-wave-drop': waveDrag !== null && waveDrop === wi,
                   'dnd-can': dropOk[wi + ':' + idx] === true,
                   'dnd-no': dropOk[wi + ':' + idx] === false,
                 }"
@@ -2763,10 +2840,48 @@ function save() {
   gap: 6px;
   align-items: flex-start;
   padding: 6px 2px;
+  border-radius: 8px;
 
   .wave__label {
     font-size: 14px;
   }
+}
+
+/* 班次拖动：抓手 + 拖动反馈 */
+.res-round__grip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 6px;
+  background-color: var(--app-border);
+  color: var(--app-text-secondary);
+  font-size: 12px;
+  letter-spacing: -2px;
+  cursor: grab;
+  user-select: none;
+  line-height: 1.4;
+
+  &:hover,
+  &.is-active {
+    background-color: color-mix(in srgb, var(--app-primary) 18%, transparent);
+    color: var(--app-primary);
+  }
+
+  &.is-active {
+    cursor: grabbing;
+  }
+}
+
+.res-round.is-wave-src,
+.res-cell.is-wave-src {
+  opacity: 0.45;
+}
+
+.res-round.is-wave-drop,
+.res-cell.is-wave-drop {
+  outline: 2px dashed var(--app-primary);
+  outline-offset: -2px;
+  background-color: color-mix(in srgb, var(--app-primary) 8%, transparent);
 }
 
 .res-round__meta {
