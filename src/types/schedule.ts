@@ -147,11 +147,14 @@ export function statLabel(t: RoleType): string {
 /** 排班展示名：创建日期（年月日）+ 模板名，如 “2026-09-04 困难团本(4队)” */
 export function scheduleTitle(s: {
   createdAt: number;
+  time: string;
   templateName?: string;
 }): string {
-  const d = new Date(s.createdAt);
+  const d = new Date(s.time);
+  console.log(d);
+  
   const date = Number.isFinite(d.getTime())
-    ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+    ? d.format("yyyy-MM-dd HH:mm")
     : "日期未知";
   const name = (s.templateName ?? "").trim();
   return name ? `${date} ${name}` : `${date} 排班`;

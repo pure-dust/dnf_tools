@@ -47,9 +47,6 @@ const groups = computed<HistGroup[]>(() => {
   return arr
 })
 
-function fmtTime(s: string) {
-  return s ? s.replace("T", " ") : "未设置时间"
-}
 
 function peopleOf(s: Schedule) {
   return s.teams.reduce((n, t) => n + t.members.length, 0)
@@ -153,10 +150,7 @@ function ovMembers(s: Schedule, c: OvColumn) {
 function ovTot(s: Schedule, c: OvColumn) {
   const t = s.teams.find((x) => x.id === c.key) ?? s.teams.find((x) => x.name === c.name)
   const members = t?.members ?? []
-  const sum = members.reduce(
-    (a, mb) => a + (mb.roleType === "dps" ? effScore(mb.job, mb.score) : 0),
-    0,
-  )
+  const sum = members.reduce((a, mb) => a + (mb.roleType === "dps" ? effScore(mb.job, mb.score) : 0), 0)
   const limit = t?.totalDamageLimit ?? 0
   const r = Math.round(sum * 10) / 10
   return {
@@ -238,10 +232,7 @@ async function doExportSchedules() {
   exportMsg.value = null
   try {
     const stamp = new Date().toISOString().slice(0, 10)
-    exportMsg.value = await exportJson(
-      `排班历史_${stamp}.json`,
-      JSON.stringify(store.data.schedules, null, 2),
-    )
+    exportMsg.value = await exportJson(`排班历史_${stamp}.json`, JSON.stringify(store.data.schedules, null, 2))
   } finally {
     exporting.value = false
   }
@@ -331,7 +322,7 @@ function doImportSchedules() {
         <div class="his__head">
           <div class="his__head-info">
             <h3 class="his__dungeon">{{ g.title }}</h3>
-            <p class="his__time">{{ fmtTime(g.time) }} · 创建于 {{ new Date(g.createdAt).toLocaleString() }}</p>
+            <p class="his__time">创建于 {{ new Date(g.createdAt).toLocaleString() }}</p>
           </div>
           <div class="his__head-ops">
             <span v-if="g.items.length > 1" class="his__batch"> 同一次排班 · {{ g.items.length }} 场 </span>
@@ -360,9 +351,7 @@ function doImportSchedules() {
           <div class="ov-scroll">
             <div class="ov-grid" :style="{ gridTemplateColumns: ovGridCols(g) }">
               <div class="ov-hd ov-hd--label">场次</div>
-              <div v-if="ovHlGroupKey(g)" class="ov-hd ov-hd--hl" title="点击该成员某角色可取消高亮">
-                高亮角色
-              </div>
+              <div v-if="ovHlGroupKey(g)" class="ov-hd ov-hd--hl" title="点击该成员某角色可取消高亮">高亮角色</div>
               <div v-for="c in ovColumns(g)" :key="c.key" class="ov-hd" :title="`${c.name} · 伤害门槛`">
                 <i class="ov-dot" :style="{ backgroundColor: c.color }"></i>{{ ovColName(c) }}
               </div>
@@ -389,7 +378,10 @@ function doImportSchedules() {
                       v-for="mb in ovMembers(s, c)"
                       :key="mb.characterId"
                       class="ov-chip"
-                      :class="[mb.roleType === 'dps' ? 'is-dps' : 'is-sup', { 'is-hl': ovIsHl(g, mb), 'is-car': isCarSlot(s, mb) }]"
+                      :class="[
+                        mb.roleType === 'dps' ? 'is-dps' : 'is-sup',
+                        { 'is-hl': ovIsHl(g, mb), 'is-car': isCarSlot(s, mb) },
+                      ]"
                       :title="`${mb.memberName} · ${mb.job} · ${mb.roleType === 'dps' ? '伤害(千亿) ' : '奶量 '}${fmtEffScore(mb.job, mb.score)}${isCarSlot(s, mb) ? ' · 车头' : ''}${ovIsHl(g, mb) ? '（点击取消高亮）' : '（点击高亮该成员全部角色）'}`"
                       @click="ovToggleHl(g, mb)"
                     >
@@ -721,4 +713,5 @@ function doImportSchedules() {
   &.is-low {
     color: var(--app-danger);
   }
-}</style>
+}
+</style>
