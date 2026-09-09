@@ -2,7 +2,8 @@
 import { computed, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
 import type { Schedule, ScheduledSlot } from "../../types/schedule"
-import { effScore, fmtEffScore, scheduleTitle } from "../../types/schedule"
+import { scheduleTitle } from "../../types/schedule"
+import { fmtVal, valOf } from "../../composables/useEffMode"
 import { ensureLoaded, importSchedules, removeSchedule, useScheduleStore } from "../../composables/useScheduleStore"
 import { colorizeTeams } from "../../utils/teamColor"
 import { exportJson, type ExportResult } from "../../services/storage"
@@ -129,7 +130,7 @@ function ovColName(c: OvColumn): string {
 /** 总览中某角色是否“车头”：该场保存了车头限制，且为输出且有效伤害 ≥ 阈值 */
 function isCarSlot(s: Schedule, mb: ScheduledSlot): boolean {
   const th = s.carHeader ?? 0
-  return th > 0 && mb.roleType === "dps" && effScore(mb.job, mb.score) >= th
+  return th > 0 && mb.roleType === "dps" && valOf(mb.job, mb.score) >= th
 }
 
 /** 总览 Grid 的列模板：首列场次 +（点击高亮时新增“高亮角色”列）+ 每队一列（等宽） */
@@ -150,7 +151,7 @@ function ovMembers(s: Schedule, c: OvColumn) {
 function ovTot(s: Schedule, c: OvColumn) {
   const t = s.teams.find((x) => x.id === c.key) ?? s.teams.find((x) => x.name === c.name)
   const members = t?.members ?? []
-  const sum = members.reduce((a, mb) => a + (mb.roleType === "dps" ? effScore(mb.job, mb.score) : 0), 0)
+  const sum = members.reduce((a, mb) => a + (mb.roleType === "dps" ? valOf(mb.job, mb.score) : 0), 0)
   const limit = t?.totalDamageLimit ?? 0
   const r = Math.round(sum * 10) / 10
   return {
@@ -364,7 +365,7 @@ function doImportSchedules() {
                       :key="mb.characterId"
                       class="ov-chip is-hl"
                       :class="[mb.roleType === 'dps' ? 'is-dps' : 'is-sup', { 'is-car': isCarSlot(s, mb) }]"
-                      :title="`${mb.memberName} · ${mb.job} · ${mb.roleType === 'dps' ? '伤害(千亿) ' : '奶量 '}${fmtEffScore(mb.job, mb.score)}${isCarSlot(s, mb) ? ' · 车头' : ''}（点击取消高亮）`"
+                      :title="`${mb.memberName} · ${mb.job} · ${mb.roleType === 'dps' ? '伤害(千亿) ' : '奶量 '}${fmtVal(mb.job, mb.score)}${isCarSlot(s, mb) ? ' · 车头' : ''}（点击取消高亮）`"
                       @click="ovToggleHl(g, mb)"
                     >
                       <span class="ov-chip__name">{{ mb.nickname }}</span>
@@ -382,7 +383,7 @@ function doImportSchedules() {
                         mb.roleType === 'dps' ? 'is-dps' : 'is-sup',
                         { 'is-hl': ovIsHl(g, mb), 'is-car': isCarSlot(s, mb) },
                       ]"
-                      :title="`${mb.memberName} · ${mb.job} · ${mb.roleType === 'dps' ? '伤害(千亿) ' : '奶量 '}${fmtEffScore(mb.job, mb.score)}${isCarSlot(s, mb) ? ' · 车头' : ''}${ovIsHl(g, mb) ? '（点击取消高亮）' : '（点击高亮该成员全部角色）'}`"
+                      :title="`${mb.memberName} · ${mb.job} · ${mb.roleType === 'dps' ? '伤害(千亿) ' : '奶量 '}${fmtVal(mb.job, mb.score)}${isCarSlot(s, mb) ? ' · 车头' : ''}${ovIsHl(g, mb) ? '（点击取消高亮）' : '（点击高亮该成员全部角色）'}`"
                       @click="ovToggleHl(g, mb)"
                     >
                       <span class="ov-chip__name">{{ mb.nickname }}</span>

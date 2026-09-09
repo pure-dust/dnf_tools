@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { Schedule } from "../types/schedule";
-import { fmtEffScore, roleLabel, scheduleTitle, statLabel } from "../types/schedule";
+import { roleLabel, scheduleTitle, statLabel } from "../types/schedule";
+import { fmtVal } from "../composables/useEffMode";
 import { colorizeTeams } from "../utils/teamColor";
 
 const props = defineProps<{ schedule: Schedule }>();
@@ -72,7 +73,7 @@ const total = computed(() =>
               </div>
               <div class="sx__cell-line3">
                 {{ statLabel(c.team.members[r - 1].roleType) }}
-                {{ fmtEffScore(c.team.members[r - 1].job, c.team.members[r - 1].score) }} · 名望 {{ c.team.members[r - 1].fame }}
+                {{ fmtVal(c.team.members[r - 1].job, c.team.members[r - 1].score) }} · 名望 {{ c.team.members[r - 1].fame }}
               </div>
             </template>
             <span v-else class="sx__empty">—</span>

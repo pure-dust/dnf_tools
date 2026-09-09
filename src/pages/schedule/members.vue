@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from "vue";
 import type { Character, Member } from "../../types/schedule";
-import { JOB_kIND, fmtEffScore, roleLabel, statLabel, uid } from "../../types/schedule";
+import { JOB_kIND, roleLabel, statLabel, uid } from "../../types/schedule";
+import { fmtVal } from "../../composables/useEffMode";
 import {
   addMember,
   importRosterGroups,
@@ -453,7 +454,7 @@ function doImport() {
               {{ roleLabel(c.roleType) }} · {{ c.job }}
             </span>
             <span class="char__field">名望 {{ c.fame }}</span>
-            <span class="char__field">{{ statLabel(c.roleType) }} {{ fmtEffScore(c.job, c.score) }}</span>
+            <span class="char__field">{{ statLabel(c.roleType) }} {{ fmtVal(c.job, c.score) }}</span>
             <span class="char__ops">
               <button class="btn btn--sm" type="button" @click="openCharDialog(viewMember.id, c)">编辑</button>
               <button class="btn btn--sm btn--danger" type="button" @click="removeCharacterConfirm(viewMember.id, c)">删除</button>

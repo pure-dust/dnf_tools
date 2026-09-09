@@ -69,8 +69,11 @@ export function emptyDraftsFromTemplate(
  */
 export function assignByLimits(
   teams: TeamDraft[],
-  pool: DraftItem[]
+  pool: DraftItem[],
+  useCoeff = true,
 ): { teams: TeamDraft[]; bench: DraftItem[] } {
+  /** 当前口径下的角色数值：勾选系数=有效值，否则=原始 score */
+  const val = (job: string, score: number) => (useCoeff ? effScore(job, score) : score)
   // 伤害门槛降序作为填充顺序（决定“红→蓝”的档次）
   const ordered = [...teams]
     .map((t, i) => ({ t, i }))
@@ -79,10 +82,10 @@ export function assignByLimits(
   const out: TeamDraft[] = ordered.map(({ t }) => ({ ...t, items: [] }))
   const sup = pool
     .filter((p) => p.character.roleType === "support")
-    .sort((a, b) => effScore(b.character.job, b.character.score) - effScore(a.character.job, a.character.score))
+    .sort((a, b) => val(b.character.job, b.character.score) - val(a.character.job, a.character.score))
   const dps = pool
     .filter((p) => p.character.roleType === "dps")
-    .sort((a, b) => effScore(b.character.job, b.character.score) - effScore(a.character.job, a.character.score))
+    .sort((a, b) => val(b.character.job, b.character.score) - val(a.character.job, a.character.score))
 
   const roleCount = (items: DraftItem[], role: "dps" | "support") =>
     items.filter((x) => x.character.roleType === role).length
@@ -93,7 +96,7 @@ export function assignByLimits(
    */
   function take(list: DraftItem[], limit: number): DraftItem | null {
     if (!list.length) return null
-    let idx = list.findIndex((it) => limit <= 0 || effScore(it.character.job, it.character.score) >= limit)
+    let idx = list.findIndex((it) => limit <= 0 || val(it.character.job, it.character.score) >= limit)
     if (idx < 0) idx = 0
     return list.splice(idx, 1)[0]
   }
@@ -217,9 +220,9 @@ export function teamCounts(items: DraftItem[]) {
  * 只在该波给定队伍之间移动辅助（成员仍互异，不会造成同人重复），队伍原有辅助数量不变。
  * 仅在生成/自动调整后调用；手动拖拽不受此限制。
  */
-export function tierWaveSupports(teams: TeamDraft[]) {
+export function tierWaveSupports(teams: TeamDraft[], useCoeff = true) {
   const isSup = (i: DraftItem) => i.character.roleType === "support"
-  const effOf = (i: DraftItem) => effScore(i.character.job, i.character.score)
+  const effOf = (i: DraftItem) => (useCoeff ? effScore(i.character.job, i.character.score) : i.character.score)
   // 队伍按 伤害门槛降序 → 红、黄、绿…
   const order = teams
     .map((t, i) => ({ t, i }))
@@ -251,9 +254,12 @@ export function tierWaveSupports(teams: TeamDraft[]) {
 }
 
 /** 队伍内输出的“有效伤害合计”（总伤害下限校验用，与展示/比较同口径） */
-export function totalDmgEff(items: DraftItem[]): number {
+export function totalDmgEff(items: DraftItem[], useCoeff = true): number {
   return items.reduce(
-    (s, it) => (it.character.roleType === "dps" ? s + effScore(it.character.job, it.character.score) : s),
+    (s, it) =>
+      it.character.roleType === "dps"
+        ? s + (useCoeff ? effScore(it.character.job, it.character.score) : it.character.score)
+        : s,
     0,
   );
 }
@@ -275,15 +281,18 @@ export function splitRounds(
   carHeader = 0,
   balance = false,
   fixedWaves = 0,
+  useCoeff = true,
 ): { waves: DraftItem[][]; bench: DraftItem[] } {
   if (!items.length || perWave <= 0) return { waves: [], bench: [] }
   if (items.length === 1 && fixedWaves <= 0) return { waves: [items], bench: [] }
 
   const isSup = (i: DraftItem) => i.character.roleType === "support"
+  /** 当前口径下的角色数值：勾选系数=有效值，否则=原始 score */
+  const valOf = (job: string, score: number) => (useCoeff ? effScore(job, score) : score)
   /** 车头：达到“车头伤害限制”的输出（每班尽量只放 1 个，避免大C扎堆同班） */
   const isCar = (i: DraftItem) =>
-    carHeader > 0 && !isSup(i) && effScore(i.character.job, i.character.score) >= carHeader
-  const effOf = (i: DraftItem) => effScore(i.character.job, i.character.score)
+    carHeader > 0 && !isSup(i) && valOf(i.character.job, i.character.score) >= carHeader
+  const effOf = (i: DraftItem) => valOf(i.character.job, i.character.score)
   const memberCount = new Set(items.map((i) => i.memberId)).size
   // 计划班数：fixedWaves>0 固定（不再自动计算，超出的角色进替补）；否则按模板容量估算
   const targetW =
@@ -395,7 +404,7 @@ export function splitRounds(
     }
     waves.push(wave)
     waveMembers.push(members)
-    totals.push(totalDmgEff(wave))
+    totals.push(totalDmgEff(wave, useCoeff))
   }
   // 最空优先：从“最强普通输出”起，逐个放进“累计总伤最低且还能再坐”的班
   // → 各班获得的中强输出数量/伤害趋于平均，各班（红队）总伤不再两极分化

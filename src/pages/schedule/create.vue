@@ -2,8 +2,9 @@
 import { computed, onMounted, ref } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import type { Character, Member, Schedule, ScheduledSlot, Template } from "../../types/schedule"
-import { effScore, fmtEffScore, roleLabel, statLabel, uid } from "../../types/schedule"
+import { roleLabel, statLabel, uid } from "../../types/schedule"
 import { ensureLoaded, replaceSchedules, saveSchedule, useScheduleStore } from "../../composables/useScheduleStore"
+import { fmtVal, useEff, valOf } from "../../composables/useEffMode"
 import type { DraftItem, TeamDraft } from "../../utils/team"
 import {
   assignByLimits,
@@ -378,7 +379,7 @@ const benchBlocks = computed(() => {
   out.forEach((b) => {
     b.items.sort(
       (x, y) =>
-        effScore(y.character.job, y.character.score) - effScore(x.character.job, x.character.score),
+        valOf(y.character.job, y.character.score) - valOf(x.character.job, x.character.score),
     )
   })
   return out
@@ -440,10 +441,10 @@ function isBelowMin(it: DraftItem): boolean {
   if (!tmpl) return false
   if (it.character.roleType === "support") {
     const min = tmpl.minHeal ?? 0
-    return min > 0 && effScore(it.character.job, it.character.score) < min
+    return min > 0 && valOf(it.character.job, it.character.score) < min
   }
   const min = tmpl.minDamage ?? 0
-  return min > 0 && effScore(it.character.job, it.character.score) < min
+  return min > 0 && valOf(it.character.job, it.character.score) < min
 }
 
 /** 模板的“车头伤害限制”（0=关闭） */
@@ -454,7 +455,7 @@ function carThreshold(): number {
 /** 某角色是否“车头”：输出且伤害 ≥ 车头限制 */
 function isCarHeadChar(c: Character): boolean {
   const th = carThreshold()
-  return th > 0 && c.roleType === "dps" && effScore(c.job, c.score) >= th
+  return th > 0 && c.roleType === "dps" && valOf(c.job, c.score) >= th
 }
 
 /** 某已选角色是否“车头”（DraftItem 版） */
@@ -508,12 +509,13 @@ function generate() {
     template.value?.carHeader ?? 0,
     dmgBalance,
     lockedRounds(), // 固定波数 >0 时按锁定班数分配，不再自动计算
+    useEff.value,
   )
   const ws: Wave[] = []
   const benchAll: DraftItem[] = [...low, ...overflow]
   rounds.forEach((poolItems, i) => {
     const base = emptyDraftsFromTemplate(template.value!.teams)
-    const res = assignByLimits(base, poolItems)
+    const res = assignByLimits(base, poolItems, useEff.value)
     ws.push({
       label: rounds.length > 1 ? `第 ${i + 1} 波` : "本波",
       pool: poolItems,
@@ -533,7 +535,7 @@ function generate() {
 /** 兜底：对全部波次重排辅助，硬保证“每波内红>黄>绿”；存在列锁定时跳过（交由各分支局部处理） */
 function applyTierWaves() {
   if (lockedCols.value.length) return
-  waves.value.forEach((w) => tierWaveSupports(w.teams))
+  waves.value.forEach((w) => tierWaveSupports(w.teams, useEff.value))
 }
 
 /**
@@ -553,7 +555,7 @@ function refillFreeCols() {
     return
   }
   const W = waves.value.length
-  const effOf = (i: DraftItem) => effScore(i.character.job, i.character.score)
+  const effOf = (i: DraftItem) => valOf(i.character.job, i.character.score)
   const isSup = (i: DraftItem) => i.character.roleType === "support"
   const isDps = (i: DraftItem) => !isSup(i)
   const supCnt = (items: DraftItem[]) => items.filter(isSup).length
@@ -591,7 +593,7 @@ function refillFreeCols() {
   const waveTot = waves.value.map((w) => {
     let t = 0
     w.teams.forEach((team, idx) => {
-      if (lockedSet.has(idx)) t += totalDmgEff(team.items)
+      if (lockedSet.has(idx)) t += totalDmgEff(team.items, useEff.value)
     })
     return t
   })
@@ -695,7 +697,7 @@ function refillFreeCols() {
       }
     }
     // 兜底：未锁定列内按红→黄→绿重排辅助（锁定列不动）
-    tierWaveSupports(freeTeams)
+    tierWaveSupports(freeTeams, useEff.value)
     overflow.push(...supA, ...dpsA)
   })
   // 同步每波 pool（显示与后续“重排本波”以实际占用为准）
@@ -828,10 +830,10 @@ function reassignWave(wave: Wave) {
   if (!lockedIdx.length) {
     const poolIds = new Set(wave.pool.map((p) => p.character.id))
     mergedBench.value = mergedBench.value.filter((x) => !poolIds.has(x.character.id))
-    const res = assignByLimits(wave.teams, wave.pool)
+    const res = assignByLimits(wave.teams, wave.pool, useEff.value)
     wave.teams = res.teams
     // 兜底：整波辅助按红→黄→绿重排
-    tierWaveSupports(wave.teams)
+    tierWaveSupports(wave.teams, useEff.value)
     mergedBench.value.push(...res.bench)
     return
   }
@@ -869,7 +871,7 @@ function reassignWave(wave: Wave) {
       ),
   )
   const freeDrafts = freeIdx.map((idx) => ({ ...wave.teams[idx], items: [] }))
-  const res = assignByLimits(freeDrafts, usePool)
+  const res = assignByLimits(freeDrafts, usePool, useEff.value)
   wave.teams.forEach((t, idx) => {
     if (!lockedSet.has(idx)) {
       const f = res.teams.find((r) => r.id === t.id)
@@ -877,7 +879,7 @@ function reassignWave(wave: Wave) {
     }
   })
   // 兜底：在未锁定列内按红→黄→绿重排辅助（锁定列不动）
-  tierWaveSupports(freeIdx.map((idx) => wave.teams[idx]))
+  tierWaveSupports(freeIdx.map((idx) => wave.teams[idx]), useEff.value)
   mergedBench.value.push(...res.bench.filter((b) => !seen.has(b.character.id)))
 }
 
@@ -1238,7 +1240,7 @@ function buildGhost(item: DraftItem) {
   nick.textContent = ch.nickname
   const meta = document.createElement("span")
   meta.className = "drag-ghost__meta"
-  meta.textContent = `${ch.job} · ${statLabel(ch.roleType)} ${fmtEffScore(ch.job, ch.score)}`
+  meta.textContent = `${ch.job} · ${statLabel(ch.roleType)} ${fmtVal(ch.job, ch.score)}`
   g.append(tag, nick, meta)
   return g
 }
@@ -1718,7 +1720,7 @@ function save() {
                   {{ roleLabel(c.roleType) }}
                 </span>
                 <span v-if="isCarHeadChar(c)" class="tag tag--car">车头</span>
-                <span class="pick-char__meta">{{ statLabel(c.roleType) }} {{ fmtEffScore(c.job, c.score) }} · 名望 {{ c.fame }}</span>
+                <span class="pick-char__meta">{{ statLabel(c.roleType) }} {{ fmtVal(c.job, c.score) }} · 名望 {{ c.fame }}</span>
               </label>
             </div>
           </div>
@@ -1921,12 +1923,12 @@ function save() {
                     v-if="t.items.length && (t.totalDamageLimit ?? 0) > 0"
                     class="res-cell__tot"
                     :class="{
-                      'is-ok': totalDmgEff(t.items) >= (t.totalDamageLimit ?? 0),
-                      'is-low': totalDmgEff(t.items) < (t.totalDamageLimit ?? 0),
+                      'is-ok': totalDmgEff(t.items, useEff) >= (t.totalDamageLimit ?? 0),
+                      'is-low': totalDmgEff(t.items, useEff) < (t.totalDamageLimit ?? 0),
                     }"
-                    title="该队输出总伤害（有效伤害合计）/目标"
+                    title="该队输出总伤害（按当前口径合计）/目标"
                   >
-                    总伤{{ fmtAmt(totalDmgEff(t.items)) }}/{{ t.totalDamageLimit }}
+                    总伤{{ fmtAmt(totalDmgEff(t.items, useEff)) }}/{{ t.totalDamageLimit }}
                   </span>
                   <span v-if="t.items.length === 0" class="res-cell__empty-tip">空</span>
                   <span v-else-if="t.items.length < TEAM_SIZE" class="res-cell__warn">
@@ -1955,7 +1957,7 @@ function save() {
                     <span v-if="isCarHead(it)" class="tag tag--car">车头</span>
                     <span class="member-row__nick">{{ it.character.nickname }}</span>
                     <span class="member-row__meta"
-                      >{{ it.character.job }} · {{ statLabel(it.character.roleType) }} {{ fmtEffScore(it.character.job, it.character.score) }}</span
+                      >{{ it.character.job }} · {{ statLabel(it.character.roleType) }} {{ fmtVal(it.character.job, it.character.score) }}</span
                     >
                   </li>
                   <li v-if="t.items.length === 0" class="team__empty">（空）可把成员拖到这里</li>
@@ -1990,7 +1992,7 @@ function save() {
                   <span v-if="isCarHead(it)" class="tag tag--car">车头</span>
                   {{ it.character.nickname }}
                   <span class="bench__meta"
-                    >{{ it.character.job }} · {{ statLabel(it.character.roleType) }} {{ fmtEffScore(it.character.job, it.character.score) }}</span
+                    >{{ it.character.job }} · {{ statLabel(it.character.roleType) }} {{ fmtVal(it.character.job, it.character.score) }}</span
                   >
                 </span>
               </div>
