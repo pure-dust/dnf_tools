@@ -21,6 +21,38 @@ export interface DraftLimit {
   minDps: number;
   /** 本队最少辅助角色数（0=不要求） */
   minSup: number;
+  /** 本队最多输出角色数（0=不限） */
+  maxDps?: number;
+  /** 本队最多辅助角色数（0=不限） */
+  maxSup?: number;
+}
+
+/** 某队某定位的有效人数上限（maxDps/maxSup；0/未设=不限；不低于对应 min，避免冲突） */
+export function roleCap(
+  team: { maxDps?: number; maxSup?: number; minDps?: number; minSup?: number },
+  role: "dps" | "support",
+): number {
+  const raw = (role === "dps" ? team.maxDps ?? 0 : team.maxSup ?? 0) || 0;
+  const min = role === "dps" ? team.minDps ?? 0 : team.minSup ?? 1;
+  if (!(raw > 0)) return Number.POSITIVE_INFINITY;
+  return Math.max(raw, min);
+}
+
+/**
+ * 某队“满编目标人数”（自动排班按此判定满员 / 是否碎队）：
+ * 辅助默认只补到 minSup，输出上限 = maxDps（未设则 = TEAM_SIZE - minSup）；
+ * 目标 = min(TEAM_SIZE, 输出上限 + minSup)；未设任何上限时即 TEAM_SIZE。
+ */
+export function teamCap(team: {
+  maxDps?: number;
+  maxSup?: number;
+  minDps?: number;
+  minSup?: number;
+}): number {
+  const minSup = Math.min(TEAM_SIZE, Math.max(0, team.minSup ?? 1));
+  const dpsCap = roleCap(team, "dps");
+  const dps = Number.isFinite(dpsCap) ? dpsCap : Math.max(0, TEAM_SIZE - minSup);
+  return Math.max(1, Math.min(TEAM_SIZE, dps + minSup));
 }
 
 export interface TeamDraft extends DraftLimit {
@@ -39,7 +71,9 @@ export function emptyDraftsFromTemplate(
     totalDamageLimit?: number
     minDps?: number
     minSup?: number
-  }[]
+    maxDps?: number
+    maxSup?: number
+  }[],
 ): TeamDraft[] {
   return teamConfigs.map((c, i) => ({
     id: c.id ?? uid(),
@@ -49,6 +83,8 @@ export function emptyDraftsFromTemplate(
     totalDamageLimit: c.totalDamageLimit || 0,
     minDps: c.minDps ?? 0,
     minSup: c.minSup ?? 1,
+    maxDps: c.maxDps ?? 0,
+    maxSup: c.maxSup ?? 0,
     items: [],
   }))
 }
@@ -89,6 +125,10 @@ export function assignByLimits(
 
   const roleCount = (items: DraftItem[], role: "dps" | "support") =>
     items.filter((x) => x.character.roleType === role).length
+  /** 某队满编容量（受 maxDps/maxSup 限制，最多 4） */
+  const capOf = (t: TeamDraft) => teamCap(t)
+  /** 某队某定位上限（Infinity=不限） */
+  const maxOf = (t: TeamDraft, role: "dps" | "support") => roleCap(t, role)
 
   /**
    * 取一名角色：列表已按分数降序。只按定位 + 门槛取人（不区分细分职业）：
@@ -105,9 +145,10 @@ export function assignByLimits(
   let openN = 0
   let rem = sup.length + dps.length
   for (let i = 0; i < out.length; i++) {
-    if (i > 0 && rem < TEAM_SIZE) break
+    const cap = capOf(out[i])
+    if (i > 0 && rem < cap) break
     openN++
-    rem -= TEAM_SIZE
+    rem -= cap
   }
   const active = out.slice(0, Math.max(openN, 1))
   if (active.length > out.length) active.length = out.length
@@ -115,7 +156,7 @@ export function assignByLimits(
   // 阶段① 辅助先行：红队 → 黄队 → …，各队保 minSup（不超编），直到辅助无法再排
   for (const team of active) {
     const minSup = team.minSup ?? 1
-    while (team.items.length < TEAM_SIZE && roleCount(team.items, "support") < minSup && sup.length) {
+    while (team.items.length < capOf(team) && roleCount(team.items, "support") < minSup && sup.length) {
       const it = take(sup, team.healLimit)
       if (!it) break
       team.items.push(it)
@@ -137,9 +178,9 @@ export function assignByLimits(
     while (dps.length && guard++ < priority.length * TEAM_SIZE) {
       let placed = false
       for (const team of priority) {
-        if (team.items.length >= TEAM_SIZE) continue
-        const outSeats = TEAM_SIZE - roleCount(team.items, "support")
-        if (roleCount(team.items, "dps") >= outSeats) continue
+        if (team.items.length >= capOf(team)) continue
+        const outSeats = capOf(team) - roleCount(team.items, "support")
+        if (roleCount(team.items, "dps") >= Math.min(outSeats, maxOf(team, "dps"))) continue
         const it = take(dps, team.damageLimit)
         if (!it) break
         team.items.push(it)
@@ -152,7 +193,7 @@ export function assignByLimits(
     // 阶段② 输出保底：红队 → 黄队 → …，先满足各队 minDps
     for (const team of active) {
       const minDps = team.minDps ?? 0
-      while (team.items.length < TEAM_SIZE && roleCount(team.items, "dps") < minDps && dps.length) {
+      while (team.items.length < capOf(team) && roleCount(team.items, "dps") < minDps && dps.length) {
         const it = take(dps, team.damageLimit)
         if (!it) break
         team.items.push(it)
@@ -160,7 +201,7 @@ export function assignByLimits(
     }
     // 阶段③ 输出补满到 4 人（仅输出，宁缺不补辅助）
     for (const team of active) {
-      while (team.items.length < TEAM_SIZE && dps.length) {
+      while (team.items.length < capOf(team) && roleCount(team.items, "dps") < maxOf(team, "dps") && dps.length) {
         const it = take(dps, team.damageLimit)
         if (!it) break
         team.items.push(it)
@@ -170,7 +211,7 @@ export function assignByLimits(
   // 宁缺兜底：非首队若最终仍凑不满一整队（输出不足导致只拿到辅助/少数输出），整队退回替补，避免碎队
   for (let i = 1; i < active.length; i++) {
     const team = active[i]
-    if (team.items.length && team.items.length < TEAM_SIZE) {
+    if (team.items.length && team.items.length < capOf(team)) {
       while (team.items.length) {
         const it = team.items.pop()!
         ;(it.character.roleType === "support" ? sup : dps).push(it)
@@ -191,6 +232,8 @@ export function toScheduleTeams(drafts: TeamDraft[]): Team[] {
     totalDamageLimit: d.totalDamageLimit || 0,
     minDps: d.minDps,
     minSup: d.minSup,
+    maxDps: d.maxDps ?? 0,
+    maxSup: d.maxSup ?? 0,
     members: d.items.map((it) => {
       const c = it.character;
       return {

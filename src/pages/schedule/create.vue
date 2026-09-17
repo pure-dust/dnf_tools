@@ -10,7 +10,9 @@ import {
   assignByLimits,
   emptyDraftsFromTemplate,
   estimateWaveCount,
+  roleCap,
   splitRounds,
+  teamCap,
   teamCounts,
   tierWaveSupports,
   toScheduleTeams,
@@ -91,6 +93,8 @@ async function loadForEdit(groupKey: string) {
       totalDamageLimit: team.totalDamageLimit || 0,
       minDps: team.minDps ?? 0,
       minSup: team.minSup ?? 1,
+      maxDps: team.maxDps ?? 0,
+      maxSup: team.maxSup ?? 0,
       items: (team.members ?? []).map((slot) => {
         const it: DraftItem = {
           memberId: slot.memberId,
@@ -587,7 +591,7 @@ function refillFreeCols() {
     })
   })
 
-  const seat = freeIdx.length * TEAM_SIZE // 每波自由座位数
+  const seat = freeIdx.reduce((s, idx) => s + teamCap(waves.value[0].teams[idx]), 0) // 每波自由座位数（受各队 maxDps/maxSup 上限影响）
   const supNeeded = freeIdx.reduce((s, idx) => s + (waves.value[0].teams[idx].minSup ?? 1), 0)
   // 每波“已占用伤害”基线（锁定列冻结部分），用于跨波均衡
   const waveTot = waves.value.map((w) => {
@@ -661,7 +665,7 @@ function refillFreeCols() {
     // 先补辅助（各自由队 minSup）
     for (const team of freeTeams) {
       const minSup = team.minSup ?? 1
-      while (team.items.length < TEAM_SIZE && supCnt(team.items) < minSup) {
+      while (team.items.length < teamCap(team) && supCnt(team.items) < minSup) {
         const it = take(supA, team.healLimit ?? 0)
         if (!it) break
         team.items.push(it)
@@ -677,8 +681,8 @@ function refillFreeCols() {
       while (dpsA.length && guard++ < prio.length * TEAM_SIZE) {
         let placed = false
         for (const team of prio) {
-          if (team.items.length >= TEAM_SIZE) continue
-          const dpsSeats = TEAM_SIZE - supCnt(team.items)
+          if (team.items.length >= teamCap(team)) continue
+          const dpsSeats = Math.min(teamCap(team) - supCnt(team.items), roleCap(team, "dps"))
           if (team.items.filter(isDps).length >= dpsSeats) continue
           const it = take(dpsA, team.damageLimit ?? 0)
           if (!it) break
@@ -689,7 +693,7 @@ function refillFreeCols() {
       }
     } else {
       for (const team of freeTeams) {
-        while (team.items.length < TEAM_SIZE) {
+        while (team.items.length < teamCap(team) && team.items.filter(isDps).length < roleCap(team, "dps")) {
           const it = take(dpsA, team.damageLimit ?? 0)
           if (!it) break
           team.items.push(it)
@@ -716,17 +720,20 @@ function fillTeamFromBench(wave: Wave, team: TeamDraft) {
   const supCount = (items: DraftItem[]) => items.filter(isSup).length
   const inWave = (item: DraftItem) =>
     wave.teams.some((t) => t.items.some((x) => x.memberId === item.memberId))
-  if (team.items.length >= TEAM_SIZE) return
+  if (team.items.length >= teamCap(team)) return
   const minSup = team.minSup ?? 1
   // ① 补辅助缺口（不超编：最多补到 minSup；跳过低门槛角色）
-  while (team.items.length < TEAM_SIZE && supCount(team.items) < minSup) {
+  while (team.items.length < teamCap(team) && supCount(team.items) < minSup) {
     const idx = used.findIndex((i) => isSup(i) && !isBelowMin(i) && !inWave(i))
     if (idx < 0) break
     const it = used.splice(idx, 1)[0]
     team.items.push(it)
   }
-  // ② 补输出直到满 4 人（跳过低门槛角色；班内红队已有车头则不再自动补第二个车头）
-  while (team.items.length < TEAM_SIZE) {
+  // ② 补输出直到满编（受 maxDps 限制；跳过低门槛角色；班内红队已有车头则不再自动补第二个车头）
+  while (
+    team.items.length < teamCap(team) &&
+    team.items.filter((i) => !isSup(i)).length < roleCap(team, "dps")
+  ) {
     const hasCar = waveHasCar(wave)
     const idx = used.findIndex((i) => !isSup(i) && !isBelowMin(i) && !inWave(i) && (!hasCar || !isCarHead(i)))
     if (idx < 0) break
@@ -757,35 +764,61 @@ function insertBenchToTeams() {
 }
 
 /**
- * 自动补位（简单版）：把替补区角色直接插回“有空位队伍且同班不含该成员”的队，
- * 不看门槛/顺序；放不下的保留替补。低于模板门槛的角色不会自动补位（只能手动拖）。
+ * 自动补位：把替补区指定定位的角色按“当前口径数值由低到高”的顺序插回有空缺的队伍。
+ * - role="dps"：输出 → 补进“还能放输出”的队（受 maxDps 限制，直到满编）
+ * - role="support"：辅助 → 只补“还缺 minSup”的队（受 maxSup 限制）
+ * 跳过低于模板门槛的角色（只能手动拖）；同班不可重复同一成员；放不下的保留替补。
  */
-function autoFillBench() {
-  if (!mergedBench.value.length) return
-  const rest: DraftItem[] = []
-  for (const item of mergedBench.value) {
-    if (isBelowMin(item)) {
-      rest.push(item) // 低门槛角色仅手动拖，自动补位跳过
-      continue
-    }
-    let placed = false
+function autoFillRole(role: "dps" | "support") {
+  const isSup = (i: DraftItem) => i.character.roleType === "support"
+  const want = (i: DraftItem) => (role === "support" ? isSup(i) : !isSup(i))
+  const pool = mergedBench.value
+    .filter((i) => want(i) && !isBelowMin(i))
+    .sort(
+      (a, b) =>
+        valOf(a.character.job, a.character.score) - valOf(b.character.job, b.character.score),
+    )
+  if (!pool.length) return
+  const placedIds = new Set<string>()
+  for (const item of pool) {
     for (const wave of waves.value) {
       if (hasSameMemberInWave(wave, item)) continue // 同班不可重复同一成员
-      if (isCarHead(item) && waveHasCar(wave)) continue // 车头不放进已有车头的班
-      const team = wave.teams.find(
-        (t, i) => !lockedCols.value.includes(i) && t.items.length < TEAM_SIZE,
-      ) // 跳过锁定列
+      if (role === "dps" && isCarHead(item) && waveHasCar(wave)) continue // 车头不放进已有车头的班
+      const team = wave.teams.find((t, i) => {
+        if (lockedCols.value.includes(i)) return false
+        if (t.items.length >= teamCap(t)) return false
+        if (role === "support") {
+          const cur = t.items.filter(isSup).length
+          if (cur >= (t.minSup ?? 1) || cur >= roleCap(t, "support")) return false
+        } else {
+          const cur = t.items.filter((x) => !isSup(x)).length
+          const seats = teamCap(t) - t.items.filter(isSup).length
+          if (cur >= seats || cur >= roleCap(t, "dps")) return false
+        }
+        return true
+      })
       if (team) {
         team.items.push(item)
-        placed = true
+        placedIds.add(item.character.id)
         break
       }
     }
-    if (!placed) rest.push(item)
   }
-  mergedBench.value = rest
-  // 兜底：保证每波内红>黄>绿
-  applyTierWaves()
+  if (placedIds.size) {
+    mergedBench.value = mergedBench.value.filter((x) => !placedIds.has(x.character.id))
+    // 兜底：保证每波内红>黄>绿
+    applyTierWaves()
+  }
+}
+
+/** 自动补位（C）：输出角色伤害由低到高补位 */
+function autoFillDps() {
+  autoFillRole("dps")
+}
+
+/** 自动补位（奶）：辅助角色奶量由低到高补位 */
+function autoFillSupport() {
+  autoFillRole("support")
 }
 
 /* ---------------- 结果区总览式网格（行=波次，列=队伍） ---------------- */
@@ -811,7 +844,7 @@ function baseTeamColor(idx: number): string {
 /** 列头门槛/配额改动 → 同步到全部波次的同一列队伍 */
 function onColumnLimit(
   idx: number,
-  field: "damageLimit" | "healLimit" | "totalDamageLimit" | "minDps" | "minSup",
+  field: "damageLimit" | "healLimit" | "totalDamageLimit" | "minDps" | "minSup" | "maxDps" | "maxSup",
   ev: Event,
 ) {
   const raw = (ev.target as HTMLInputElement).value
@@ -1744,10 +1777,19 @@ function save() {
           class="btn"
           type="button"
           :disabled="!hasGenerated || mergedBench.length === 0"
-          @click="autoFillBench"
-          title="把替补区角色插入有空位队伍（仅保证同一成员不在同一班重复）"
+          @click="autoFillDps"
+          title="自动补位（C）：把替补区的输出角色按伤害由低到高补进有空位的队伍"
         >
-          自动补位
+          自动补位（C）
+        </button>
+        <button
+          class="btn"
+          type="button"
+          :disabled="!hasGenerated || mergedBench.length === 0"
+          @click="autoFillSupport"
+          title="自动补位（奶）：把替补区的辅助角色按奶量由低到高补进还缺辅助的队伍"
+        >
+          自动补位（奶）
         </button>
         <span class="create__hint">按模板各队门槛分配（就近补齐）；角色多于模板人数时自动拆成多波</span>
       </div>
@@ -1857,6 +1899,30 @@ function save() {
                     @input="onColumnLimit(idx, 'minSup', $event)"
                   />
                 </label>
+                <label title="该队最多放入的输出角色数（0=不限）">
+                  <span>输出≤</span>
+                  <input
+                    class="input res-limit-input"
+                    type="number"
+                    min="0"
+                    placeholder="0"
+                    :value="t.maxDps ?? 0"
+                    :disabled="isColLocked(idx)"
+                    @input="onColumnLimit(idx, 'maxDps', $event)"
+                  />
+                </label>
+                <label title="该队最多放入的辅助角色数（0=不限）">
+                  <span>辅助≤</span>
+                  <input
+                    class="input res-limit-input"
+                    type="number"
+                    min="0"
+                    placeholder="0"
+                    :value="t.maxSup ?? 0"
+                    :disabled="isColLocked(idx)"
+                    @input="onColumnLimit(idx, 'maxSup', $event)"
+                  />
+                </label>
               </div>
             </div>
 
@@ -1931,8 +1997,8 @@ function save() {
                     总伤{{ fmtAmt(totalDmgEff(t.items, useEff)) }}/{{ t.totalDamageLimit }}
                   </span>
                   <span v-if="t.items.length === 0" class="res-cell__empty-tip">空</span>
-                  <span v-else-if="t.items.length < TEAM_SIZE" class="res-cell__warn">
-                    未满 {{ t.items.length }}/4
+                  <span v-else-if="t.items.length < teamCap(t)" class="res-cell__warn">
+                    未满 {{ t.items.length }}/{{ teamCap(t) }}
                   </span>
                   <span v-else class="res-cell__full">满员</span>
                 </div>

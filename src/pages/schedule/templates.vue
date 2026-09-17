@@ -31,6 +31,10 @@ interface Row extends TeamLike {
   minDps: number;
   /** 最少辅助角色数 */
   minSup: number;
+  /** 最多输出角色数（0=不限） */
+  maxDps: number;
+  /** 最多辅助角色数（0=不限） */
+  maxSup: number;
 }
 
 const dialog = ref(false);
@@ -78,6 +82,8 @@ function openEdit(t: Template) {
     totalDamageLimit: c.totalDamageLimit ?? 0,
     minDps: c.minDps ?? 0,
     minSup: c.minSup ?? 1,
+    maxDps: c.maxDps ?? 0,
+    maxSup: c.maxSup ?? 0,
   }));
 }
 
@@ -90,6 +96,8 @@ function addRow() {
     totalDamageLimit: 0,
     minDps: 0,
     minSup: 1,
+    maxDps: 0,
+    maxSup: 0,
   });
 }
 function removeRow(i: number) {
@@ -109,6 +117,8 @@ function submit() {
     totalDamageLimit: t.totalDamageLimit || 0,
     minDps: t.minDps ?? 0,
     minSup: t.minSup ?? 1,
+    maxDps: t.maxDps ?? 0,
+    maxSup: t.maxSup ?? 0,
   }));
   if (editingId.value) {
     const cur = store.data.templates.find((t) => t.id === editingId.value);
@@ -251,6 +261,9 @@ function doImportTemplates() {
                 <template v-if="(c.team.minDps ?? 0) > 0 || (c.team.minSup ?? 0) > 0">
                   · C≥{{ c.team.minDps ?? 0 }} 奶≥{{ c.team.minSup ?? 0 }}
                 </template>
+                <template v-if="(c.team.maxDps ?? 0) > 0 || (c.team.maxSup ?? 0) > 0">
+                  · C≤{{ c.team.maxDps ?? 0 }} 奶≤{{ c.team.maxSup ?? 0 }}
+                </template>
               </span>
           </div>
         </div>
@@ -342,6 +355,14 @@ function doImportTemplates() {
               <label title="该队至少放入的辅助角色数">
                 辅助≥
                 <input v-model.number="row.minSup" class="input" type="number" min="0" placeholder="1" />
+              </label>
+              <label title="该队最多放入的输出角色数（0=不限）">
+                输出≤
+                <input v-model.number="row.maxDps" class="input" type="number" min="0" placeholder="0" />
+              </label>
+              <label title="该队最多放入的辅助角色数（0=不限）">
+                辅助≤
+                <input v-model.number="row.maxSup" class="input" type="number" min="0" placeholder="0" />
               </label>
             </div>
             <button class="btn btn--sm btn--danger" type="button" :disabled="draft.teams.length <= 1" @click="removeRow(i)">

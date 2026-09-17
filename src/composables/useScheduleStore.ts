@@ -216,6 +216,8 @@ export function importTemplates(list: unknown[]): number {
       totalDamageLimit: Math.max(0, toNum(tt?.totalDamageLimit)),
       minDps: Math.max(0, toNum(tt?.minDps)),
       minSup: Math.max(1, toNum(tt?.minSup, 1)),
+      maxDps: Math.max(0, toNum(tt?.maxDps)),
+      maxSup: Math.max(0, toNum(tt?.maxSup)),
     }));
     if (!name || !teams.length) continue;
     const tpl: Template = {
@@ -273,6 +275,8 @@ export function importSchedules(list: unknown[]): number {
       totalDamageLimit: toNum(t?.totalDamageLimit) || 0,
       minDps: toNum(t?.minDps),
       minSup: toNum(t?.minSup, 1),
+      maxDps: toNum(t?.maxDps),
+      maxSup: toNum(t?.maxSup),
     }));
     const rec: Schedule = {
       id: newId,

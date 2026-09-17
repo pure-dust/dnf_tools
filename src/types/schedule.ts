@@ -54,6 +54,10 @@ export interface Team {
   minDps?: number;
   /** 本队最少辅助角色数（0=不要求） */
   minSup?: number;
+  /** 本队最多输出角色数（0=不限） */
+  maxDps?: number;
+  /** 本队最多辅助角色数（0=不限） */
+  maxSup?: number;
 }
 
 export interface Schedule {
@@ -100,6 +104,10 @@ export interface TemplateTeam {
   minDps?: number;
   /** 该队最少辅助角色数（0=不要求） */
   minSup?: number;
+  /** 该队最多输出角色数（0=不限） */
+  maxDps?: number;
+  /** 该队最多辅助角色数（0=不限） */
+  maxSup?: number;
 }
 
 /** 排班模板：规定参与人数 + 每个队伍各自的伤害/奶量限制 */
