@@ -1,79 +1,86 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
-import type { Template, TemplateTeam } from "../../types/schedule";
-import { uid } from "../../types/schedule";
+import { computed, reactive, ref } from "vue"
+import type { Template, TemplateTeam } from "../../types/schedule"
+import { uid } from "../../types/schedule"
 import {
   addTemplate,
   importTemplates,
   removeTemplate,
   updateTemplate,
   useScheduleStore,
-} from "../../composables/useScheduleStore";
-import { colorizeTeams, type TeamLike } from "../../utils/teamColor";
-import { exportJson, type ExportResult } from "../../services/storage";
+} from "../../composables/useScheduleStore"
+import { colorizeTeams, type TeamLike } from "../../utils/teamColor"
+import { exportJson, type ExportResult } from "../../services/storage"
 
-const store = useScheduleStore();
+const store = useScheduleStore()
 
 /* 队伍行预览上色（伤害门槛降序 → 红黄绿蓝） */
 function colored(teams: TemplateTeam[]) {
-  return colorizeTeams(teams);
+  return colorizeTeams(teams)
 }
 
 /* ---------------- 编辑弹窗 ---------------- */
 interface Row extends TeamLike {
-  id: string;
-  name: string;
-  damageLimit: number;
-  healLimit: number;
+  id: string
+  name: string
+  damageLimit: number
+  healLimit: number
   /** 总伤害下限 */
-  totalDamageLimit: number;
+  totalDamageLimit: number
   /** 最少输出角色数 */
-  minDps: number;
+  minDps: number
   /** 最少辅助角色数 */
-  minSup: number;
+  minSup: number
   /** 最多输出角色数（0=不限） */
-  maxDps: number;
+  maxDps: number
   /** 最多辅助角色数（0=不限） */
-  maxSup: number;
+  maxSup: number
 }
 
-const dialog = ref(false);
-const editingId = ref<string | null>(null);
-const draft = reactive<{ name: string; maxMembers: number; minDamage: number; minHeal: number; carHeader: number; teams: Row[] }>({
+const dialog = ref(false)
+const editingId = ref<string | null>(null)
+const draft = reactive<{
+  name: string
+  maxMembers: number
+  minDamage: number
+  minHeal: number
+  carHeader: number
+  teams: Row[]
+}>({
   name: "",
   maxMembers: 16,
   minDamage: 0,
   minHeal: 0,
   carHeader: 0,
   teams: [],
-});
+})
 
 function colorOf(row: Row) {
-  const arr = colorizeTeams(draft.teams);
-  const found = arr.find((c) => c.team.id === row.id);
-  return found ? found.color : "#888";
+  const arr = colorizeTeams(draft.teams)
+  const found = arr.find((c) => c.team.id === row.id)
+  return found ? found.color : "#888"
 }
 
 function openCreate() {
-  dialog.value = true;
-  editingId.value = null;
-  draft.name = "";
-  draft.maxMembers = 16;
-  draft.minDamage = 0;
-  draft.minHeal = 0;
-  draft.carHeader = 0;
-  draft.teams = [];
-  addRow();
+  dialog.value = true
+  editingId.value = null
+  draft.name = ""
+  draft.maxMembers = 16
+  draft.minDamage = 0
+  draft.minHeal = 0
+  draft.carHeader = 0
+  draft.teams = []
+  addRow()
 }
 
 function openEdit(t: Template) {
-  dialog.value = true;
-  editingId.value = t.id;
-  draft.name = t.name;
-  draft.maxMembers = t.maxMembers;
-  draft.minDamage = t.minDamage ?? 0;
-  draft.minHeal = t.minHeal ?? 0;
-  draft.carHeader = t.carHeader ?? 0;
+  dialog.value = true
+  editingId.value = t.id
+  draft.name = t.name
+  draft.maxMembers = t.maxMembers
+  draft.minDamage = t.minDamage ?? 0
+  draft.minHeal = t.minHeal ?? 0
+  draft.carHeader = t.carHeader ?? 0
   draft.teams = t.teams.map((c) => ({
     id: c.id,
     name: c.name,
@@ -84,7 +91,7 @@ function openEdit(t: Template) {
     minSup: c.minSup ?? 1,
     maxDps: c.maxDps ?? 0,
     maxSup: c.maxSup ?? 0,
-  }));
+  }))
 }
 
 function addRow() {
@@ -98,17 +105,21 @@ function addRow() {
     minSup: 1,
     maxDps: 0,
     maxSup: 0,
-  });
+  })
 }
 function removeRow(i: number) {
-  draft.teams.splice(i, 1);
+  draft.teams.splice(i, 1)
 }
 
-const rowsValid = computed(() => draft.teams.length >= 1 && draft.teams.every((t) => (t.damageLimit ?? 0) >= 0 && (t.healLimit ?? 0) >= 0 && (t.totalDamageLimit ?? 0) >= 0));
-const canSave = computed(() => draft.name.trim().length > 0 && rowsValid.value);
+const rowsValid = computed(
+  () =>
+    draft.teams.length >= 1 &&
+    draft.teams.every((t) => (t.damageLimit ?? 0) >= 0 && (t.healLimit ?? 0) >= 0 && (t.totalDamageLimit ?? 0) >= 0),
+)
+const canSave = computed(() => draft.name.trim().length > 0 && rowsValid.value)
 
 function submit() {
-  if (!canSave.value) return;
+  if (!canSave.value) return
   const teams: TemplateTeam[] = draft.teams.map((t) => ({
     id: t.id,
     name: t.name || "队",
@@ -119,9 +130,9 @@ function submit() {
     minSup: t.minSup ?? 1,
     maxDps: t.maxDps ?? 0,
     maxSup: t.maxSup ?? 0,
-  }));
+  }))
   if (editingId.value) {
-    const cur = store.data.templates.find((t) => t.id === editingId.value);
+    const cur = store.data.templates.find((t) => t.id === editingId.value)
     if (cur)
       updateTemplate({
         ...cur,
@@ -131,83 +142,90 @@ function submit() {
         minHeal: draft.minHeal || 0,
         carHeader: draft.carHeader || 0,
         teams,
-      });
+      })
   } else {
-    addTemplate(draft.name.trim(), draft.maxMembers || 1, teams, draft.minDamage || 0, draft.minHeal || 0, draft.carHeader || 0);
+    addTemplate(
+      draft.name.trim(),
+      draft.maxMembers || 1,
+      teams,
+      draft.minDamage || 0,
+      draft.minHeal || 0,
+      draft.carHeader || 0,
+    )
   }
-  dialog.value = false;
+  dialog.value = false
 }
 
 function remove(t: Template) {
   if (confirm(`确定删除模板「${t.name}」？已生成的排班不受影响。`)) {
-    removeTemplate(t.id);
+    removeTemplate(t.id)
   }
 }
 
 /* ---------------- 导入 / 导出 ---------------- */
-const importOpen = ref(false);
-const importText = ref("");
-const importFileName = ref("");
-const importMsg = ref<{ ok: boolean; text: string } | null>(null);
-const exportMsg = ref<ExportResult | null>(null);
-const exporting = ref(false);
+const importOpen = ref(false)
+const importText = ref("")
+const importFileName = ref("")
+const importMsg = ref<{ ok: boolean; text: string } | null>(null)
+const exportMsg = ref<ExportResult | null>(null)
+const exporting = ref(false)
 
 function openImportDialog() {
-  importOpen.value = true;
-  importText.value = "";
-  importFileName.value = "";
-  importMsg.value = null;
+  importOpen.value = true
+  importText.value = ""
+  importFileName.value = ""
+  importMsg.value = null
 }
 
 function onImportFile(ev: Event) {
-  const input = ev.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (!file) return;
-  const reader = new FileReader();
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  const reader = new FileReader()
   reader.onload = () => {
-    importText.value = String(reader.result ?? "");
-    importFileName.value = file.name;
-    importMsg.value = null;
-  };
-  reader.readAsText(file);
-  input.value = "";
+    importText.value = String(reader.result ?? "")
+    importFileName.value = file.name
+    importMsg.value = null
+  }
+  reader.readAsText(file)
+  input.value = ""
 }
 
 async function doExportTemplates() {
-  if (exporting.value || store.data.templates.length === 0) return;
-  exporting.value = true;
-  exportMsg.value = null;
+  if (exporting.value || store.data.templates.length === 0) return
+  exporting.value = true
+  exportMsg.value = null
   try {
-    const stamp = new Date().toISOString().slice(0, 10);
-    exportMsg.value = await exportJson(
-      `排班模板_${stamp}.json`,
-      JSON.stringify(store.data.templates, null, 2),
-    );
+    const stamp = new Date().toISOString().slice(0, 10)
+    exportMsg.value = await exportJson(`排班模板_${stamp}.json`, JSON.stringify(store.data.templates, null, 2))
   } finally {
-    exporting.value = false;
+    exporting.value = false
   }
 }
 
 function doImportTemplates() {
-  let arr: unknown[] | null = null;
+  let arr: unknown[] | null = null
   try {
-    const v = JSON.parse(importText.value);
-    if (Array.isArray(v)) arr = v;
+    const v = JSON.parse(importText.value)
+    if (Array.isArray(v)) arr = v
   } catch {
-    arr = null;
+    arr = null
   }
   if (!arr) {
-    importMsg.value = { ok: false, text: "解析失败：请粘贴/选择“模板数组”JSON，例如 [ { name, maxMembers, teams: [...] } ]" };
-    return;
+    importMsg.value = {
+      ok: false,
+      text: "解析失败：请粘贴/选择“模板数组”JSON，例如 [ { name, maxMembers, teams: [...] } ]",
+    }
+    return
   }
-  const n = importTemplates(arr);
+  const n = importTemplates(arr)
   importMsg.value = {
     ok: true,
     text: `导入完成：成功 ${n} 条${n > 0 ? "（同名模板已覆盖，其余追加）" : ""}`,
-  };
+  }
   window.setTimeout(() => {
-    if (importOpen.value) importOpen.value = false;
-  }, 900);
+    if (importOpen.value) importOpen.value = false
+  }, 900)
 }
 </script>
 
@@ -238,33 +256,25 @@ function doImportTemplates() {
       <section v-for="t in store.data.templates" :key="t.id" class="tpl panel">
         <div class="tpl__main">
           <h3 class="tpl__name">{{ t.name }}</h3>
-          <p class="tpl__meta">参与人数上限 {{ t.maxMembers }} · {{ t.teams.length }} 个队伍
+          <p class="tpl__meta">
+            参与人数上限 {{ t.maxMembers }} · {{ t.teams.length }} 个队伍
             <template v-if="(t.minDamage ?? 0) > 0 || (t.minHeal ?? 0) > 0">
               · 自动门槛 伤≥{{ t.minDamage ?? 0 }} 奶≥{{ t.minHeal ?? 0 }}
             </template>
-            <template v-if="(t.carHeader ?? 0) > 0">
-              · 车头伤害≥{{ t.carHeader ?? 0 }}（每班红队 1 个）
-            </template>
+            <template v-if="(t.carHeader ?? 0) > 0"> · 车头伤害≥{{ t.carHeader ?? 0 }}（每班红队 1 个） </template>
           </p>
           <div class="tpl__teams">
-              <span
-                v-for="c in colored(t.teams)"
-                :key="c.team.id"
-                class="tpl__team"
-                :style="{ '--tpl-c': c.color }"
-              >
-                <span class="tpl__dot"></span>
-                {{ c.team.name }} · 伤害{{ c.team.damageLimit + "千亿" || "不限" }} · 奶量{{ c.team.healLimit || "不限" }}
-                <template v-if="(c.team.totalDamageLimit ?? 0) > 0">
-                  · 总伤≥{{ c.team.totalDamageLimit }}
-                </template>
-                <template v-if="(c.team.minDps ?? 0) > 0 || (c.team.minSup ?? 0) > 0">
-                  · C≥{{ c.team.minDps ?? 0 }} 奶≥{{ c.team.minSup ?? 0 }}
-                </template>
-                <template v-if="(c.team.maxDps ?? 0) > 0 || (c.team.maxSup ?? 0) > 0">
-                  · C≤{{ c.team.maxDps ?? 0 }} 奶≤{{ c.team.maxSup ?? 0 }}
-                </template>
-              </span>
+            <span v-for="c in colored(t.teams)" :key="c.team.id" class="tpl__team" :style="{ '--tpl-c': c.color }">
+              <span class="tpl__dot"></span>
+              {{ c.team.name }} · 伤害{{ c.team.damageLimit + "千亿" || "不限" }} · 奶量{{ c.team.healLimit || "不限" }}
+              <template v-if="(c.team.totalDamageLimit ?? 0) > 0"> · 总伤≥{{ c.team.totalDamageLimit }} </template>
+              <template v-if="(c.team.minDps ?? 0) > 0 || (c.team.minSup ?? 0) > 0">
+                · C≥{{ c.team.minDps ?? 0 }} 奶≥{{ c.team.minSup ?? 0 }}
+              </template>
+              <template v-if="(c.team.maxDps ?? 0) > 0 || (c.team.maxSup ?? 0) > 0">
+                · C≤{{ c.team.maxDps ?? 0 }} 奶≤{{ c.team.maxSup ?? 0 }}
+              </template>
+            </span>
           </div>
         </div>
         <div class="tpl__ops">
@@ -290,42 +300,26 @@ function doImportTemplates() {
           </div>
         </div>
 
-          <div class="form-grid">
-            <div class="form-field">
-              <label>最低伤害限制</label>
-              <input
-                v-model.number="draft.minDamage"
-                class="input"
-                type="number"
-                min="0"
-                placeholder="0=不限"
-              />
-              <small>低于此分的输出不参与自动排班，只能手动拖动</small>
-            </div>
-            <div class="form-field">
-              <label>最低奶量限制</label>
-              <input
-                v-model.number="draft.minHeal"
-                class="input"
-                type="number"
-                min="0"
-                placeholder="0=不限"
-              />
-              <small>低于此分的辅助不参与自动排班，只能手动拖动</small>
-            </div>
-          </div>
-
+        <div class="form-grid">
           <div class="form-field">
-            <label>车头伤害限制（输出≥此分视为“车头”）</label>
-            <input
-              v-model.number="draft.carHeader"
-              class="input"
-              type="number"
-              min="0"
-              placeholder="0=关闭"
-            />
-            <small>车头会尽量分散到不同班次：自动排班时每个班次红队只放 1 个车头，避免伤害最高的大C扎堆同班（0=关闭）</small>
+            <label>最低伤害限制</label>
+            <input v-model.number="draft.minDamage" class="input" type="number" min="0" placeholder="0=不限" />
+            <small>低于此分的输出不参与自动排班，只能手动拖动</small>
           </div>
+          <div class="form-field">
+            <label>最低奶量限制</label>
+            <input v-model.number="draft.minHeal" class="input" type="number" min="0" placeholder="0=不限" />
+            <small>低于此分的辅助不参与自动排班，只能手动拖动</small>
+          </div>
+        </div>
+
+        <div class="form-field">
+          <label>车头伤害限制（输出≥此分视为“车头”）</label>
+          <input v-model.number="draft.carHeader" class="input" type="number" min="0" placeholder="0=关闭" />
+          <small
+            >车头会尽量分散到不同班次：自动排班时每个班次红队只放 1 个车头，避免伤害最高的大C扎堆同班（0=关闭）</small
+          >
+        </div>
 
         <div class="tpl-editor">
           <div class="tpl-editor__head">
@@ -365,7 +359,12 @@ function doImportTemplates() {
                 <input v-model.number="row.maxSup" class="input" type="number" min="0" placeholder="0" />
               </label>
             </div>
-            <button class="btn btn--sm btn--danger" type="button" :disabled="draft.teams.length <= 1" @click="removeRow(i)">
+            <button
+              class="btn btn--sm btn--danger"
+              type="button"
+              :disabled="draft.teams.length <= 1"
+              @click="removeRow(i)"
+            >
               删除
             </button>
           </div>
@@ -375,9 +374,7 @@ function doImportTemplates() {
 
         <div class="dialog__ops">
           <button class="btn" type="button" @click="dialog = false">取消</button>
-          <button class="btn btn--primary" type="button" :disabled="!canSave" @click="submit">
-            保存
-          </button>
+          <button class="btn btn--primary" type="button" :disabled="!canSave" @click="submit">保存</button>
         </div>
       </div>
     </div>
@@ -541,7 +538,7 @@ function doImportTemplates() {
   }
 
   .dialog--wide {
-    width: min(840px, calc(100vw - 40px));
+    width: min(960px, calc(100vw - 40px));
   }
 
   .tpl-editor {
@@ -594,6 +591,14 @@ function doImportTemplates() {
         gap: 6px;
         font-size: 12px;
         color: var(--app-text-secondary);
+      }
+
+      & > label:nth-child(1) {
+        flex: 1.3;
+      }
+
+      & > label:nth-child(2) {
+        flex: 1.3;
       }
     }
 
